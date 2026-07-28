@@ -1,0 +1,36 @@
+# Python
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.py[cod]
+*.egg-info/
+
+# Runtime data and secrets
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.db
+runtime/
+
+# Node
+node_modules/
+dist/
+playwright-report/
+test-results/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Model artifacts are referenced from the legacy workspace, never copied here
+*.pth
+*.pt
+*.npy
+*.mp4
+*.wav
+
