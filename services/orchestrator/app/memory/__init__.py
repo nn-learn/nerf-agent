@@ -1,0 +1,2 @@
+"""Consent-governed personalization memory."""
+

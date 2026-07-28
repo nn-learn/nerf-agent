@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS model_runs (
 CREATE TABLE IF NOT EXISTS memory_items (
     memory_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    contains_sensitive_content INTEGER NOT NULL CHECK (contains_sensitive_content IN (0, 1)),
     source_turn_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
     state TEXT NOT NULL,
     content TEXT NOT NULL
 );
@@ -98,7 +101,9 @@ CREATE TABLE IF NOT EXISTS handoffs (
     handoff_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     risk_assessment_id TEXT NOT NULL,
-    state TEXT NOT NULL
+    idempotency_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    accepted_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS avatar_metrics (
@@ -109,4 +114,3 @@ CREATE TABLE IF NOT EXISTS avatar_metrics (
     metric_value REAL NOT NULL,
     timestamp_ms INTEGER NOT NULL
 );
-
