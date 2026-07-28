@@ -1,0 +1,2 @@
+"""Stable cross-component contracts."""
+
