@@ -1,0 +1,2 @@
+{"case_id":"sleep-basic","query":"怎样改善睡眠","risk_level":"GREEN","expected_document_ids":["demo-sleep-hygiene"]}
+{"case_id":"sleep-red-filter","query":"怎样改善睡眠","risk_level":"RED","expected_document_ids":[]}

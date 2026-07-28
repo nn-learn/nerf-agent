@@ -1,0 +1,17 @@
+retrieval:
+  evidence_threshold: 0.62
+
+documents:
+  - document_id: demo-sleep-hygiene
+    title: 睡眠卫生演示知识
+    version: 1.0.0
+    reviewer: demo-clinical-reviewer
+    reviewed_at: 2026-07-28
+    expires_at: 2027-07-28
+    audience:
+      - adult
+    allowed_risk_levels:
+      - GREEN
+      - AMBER
+    source: reviewed/demo_sleep.md
+
