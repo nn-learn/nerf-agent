@@ -205,6 +205,8 @@ class SessionManager:
         async with self._sessions_lock:
             if session_id in self._sessions:
                 raise ValueError("session id already exists")
+            if not await self.store.reserve_session(session_id):
+                raise ValueError("session id already exists")
             self._sessions[session_id] = runtime
         await self.store.append_payload(
             session_id=session_id,
@@ -292,16 +294,28 @@ class SessionManager:
                     ):
                         return self._interrupted_result(active)
                 else:
-                    if not await self._emit_current(
+                    visual_emitted = await self._emit_visual_if_consented(
                         runtime,
                         active,
-                        "vision.observation.ready",
                         {
                             "summary": effective_visual_summary,
                             "valid_for_ms": 10_000,
                         },
+                    )
+                    if not visual_emitted and not await self._is_current(
+                        runtime,
+                        active,
                     ):
                         return self._interrupted_result(active)
+                    if not visual_emitted:
+                        effective_visual_summary = ""
+                        if not await self._emit_current(
+                            runtime,
+                            active,
+                            "vision.cancelled",
+                            {"reason": "camera_consent_revoked"},
+                        ):
+                            return self._interrupted_result(active)
 
             graph_result: dict[str, Any] = await self._graph.ainvoke(
                 {
@@ -544,6 +558,45 @@ class SessionManager:
                 payload=payload,
             )
             return True
+
+    async def _emit_visual_if_consented(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+        payload: dict[str, object],
+    ) -> bool:
+        async with runtime.event_lock:
+            if runtime.active_turn is not active:
+                return False
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            event = await self.store.append_payload_if_consent_granted(
+                session_id=active.handle.session_id,
+                consent_kind=ConsentKind.CAMERA.value,
+                turn_id=active.handle.turn_id,
+                trace_id=active.trace_id,
+                cancel_token=active.handle.cancel_token,
+                event_type="vision.observation.ready",
+                payload=payload,
+            )
+            return event is not None
+
+    async def _is_current(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+    ) -> bool:
+        async with runtime.event_lock:
+            return (
+                runtime.active_turn is active
+                and await self._coordinator.tokens.is_current(
+                    active.handle.turn_id,
+                    active.handle.cancel_token,
+                )
+            )
 
     async def _finish_if_active(
         self,

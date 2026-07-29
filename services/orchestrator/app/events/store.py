@@ -48,6 +48,19 @@ class EventStore:
             with sqlite3.connect(self.database_path) as connection:
                 return self._append_locked(connection, event)
 
+    async def reserve_session(self, session_id: str) -> bool:
+        """Atomically claim a session id across processes and restarts."""
+        async with self._lock:
+            with sqlite3.connect(self.database_path) as connection:
+                try:
+                    connection.execute(
+                        "INSERT INTO sessions(session_id, created_at_ms) VALUES (?, ?)",
+                        (session_id, int(time.time() * 1000)),
+                    )
+                except sqlite3.IntegrityError:
+                    return False
+        return True
+
     async def append_payload(
         self,
         *,
@@ -72,6 +85,42 @@ class EventStore:
                     seq=seq,
                     type=event_type,
                     timestamp_ms=timestamp_ms or int(time.time() * 1000),
+                    cancel_token=cancel_token,
+                    payload=payload,
+                )
+                self._append_locked(connection, event)
+                return event
+
+    async def append_payload_if_consent_granted(
+        self,
+        *,
+        session_id: str,
+        consent_kind: str,
+        event_type: str,
+        payload: dict[str, object],
+        turn_id: str,
+        trace_id: str,
+        cancel_token: str,
+    ) -> EventEnvelope[dict[str, object]] | None:
+        """Atomically gate a derived event on the latest persisted consent."""
+        reject_binary(payload)
+        async with self._lock:
+            with sqlite3.connect(self.database_path) as connection:
+                consent = connection.execute(
+                    "SELECT granted FROM consents WHERE session_id = ? AND kind = ?",
+                    (session_id, consent_kind),
+                ).fetchone()
+                if consent is None or not bool(consent[0]):
+                    return None
+                seq = self._max_seq(connection, session_id) + 1
+                event = EventEnvelope[dict[str, object]](
+                    event_id=f"evt_{uuid4().hex}",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    seq=seq,
+                    type=event_type,
+                    timestamp_ms=int(time.time() * 1000),
                     cancel_token=cancel_token,
                     payload=payload,
                 )

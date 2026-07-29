@@ -1,85 +1,122 @@
 # PsyAvatar Care「心澄」
 
-面向成年用户的数字人心理支持工程演示：用户可以像视频通话一样与 AI 交流，在明确授权后临时开启摄像头，并在需要时进入可审计的模拟临床接管流程。
+一个可零 GPU 演示的数字人心理支持 Agent：用户像打视频一样与 AI 交流，在明确同意后临时启用摄像头；系统将语音、视觉、评审知识、确定性风险分级和数字人渲染编排成一条可打断、可降级、可审计的会话链路。
 
-本项目是心理支持与随访演示，不是诊断、治疗、处方或紧急服务。
+> 产品边界：面向成年用户的心理支持与随访演示，不是诊断、治疗、处方或紧急服务。人工接管为模拟流程，不表示已联系真实临床人员。
 
-## 当前能力
+## 为什么这样融合
 
-- Python 3.12 FastAPI + LangGraph 显式安全路由
-- GREEN / AMBER / RED / EMERGENCY 四级风险状态
-- 评审知识库、BGE-M3 + BM25 混合检索和证据校验
-- 需同意的长期记忆、可撤销记忆与高影响工具审批
-- 单房间、短时效、最小发布权限的 LiveKit 令牌
-- React 数字人视频通话界面和无需 GPU 的 mock 数字人
-- 摄像头二次确认、权限拒绝降级和严格暂停顺序
-- SQLite 追加式审计事件；拒绝持久化任何嵌套二进制媒体
-- 模拟临床转介状态机，不声称已联系真实专业人员
+- `agent-mind/` 的 Java Agent 没有继续充当主编排核心。其 Agent、记忆、MCP、RAG 概念被重新设计为 Python 3.12 中的显式状态图、类型化工具、评审知识库和追加式事件协议。
+- `RAD-NeRF/RAD-NeRF/` 保持只读，保留原 person 222、Wav2Vec 和 RAD-NeRF 资产；通过独立 Python 3.10 worker 与 gRPC 契约接入。
+- 原模型选择保持：`faster-whisper small + qwen-max + Edge TTS Xiaoxiao + BGE-M3 + Wav2Vec/RAD-NeRF`。默认 mock 只替换运行时调用，不替换接口与工程边界。
 
-旧项目 `agent-mind/` 和 `RAD-NeRF/RAD-NeRF/` 仅作为只读模型与需求来源。新产品不会修改其中的用户代码。
+完整分层与回合事件顺序见 [docs/architecture.md](docs/architecture.md)。
 
-## 零 GPU 演示
+## 已实现
 
-默认 Web 模式是 `mock`，不需要 LiveKit、云端凭证或 GPU：
+- FastAPI + LangGraph 显式 Agent 图
+- GREEN / AMBER / RED / EMERGENCY 四级确定性安全路由
+- BGE-M3 dense/sparse + BM25 + RRF 混合检索和证据约束
+- 工作、情景、语义与隔离安全记忆；敏感长期记忆需同意
+- 类型化工具、审批、幂等与模拟人工接管
+- LiveKit 短时单房间令牌，只允许 camera/microphone 发布
+- 摄像头二次同意、自预览、暂停即撤销、Qwen 临时视觉观察
+- 同一 `trace_id` 的语音/视觉/回复/音频/数字人事件链
+- 插话原子取消，视觉、数字人、TTS、STT、LiveKit 分层降级
+- 会话 Bearer、临床演示 RBAC/作用域、写请求限流和安全响应头
+- 脱敏人工接管台：风险原因、关键短摘录、不可变时间线
+- 固定风险/视觉/隐私评测；SQLite 拒绝持久化原始媒体
+
+## 最快演示（无 GPU）
+
+首次准备：
 
 ```powershell
 Set-Location apps\web
 npm install
-npm run dev
+Set-Location ..\..\services\orchestrator
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+Set-Location ..\..
 ```
 
-打开 `http://localhost:5173`。摄像头不会自动启动，只有点击“开启视觉”并在说明弹窗中再次确认后，浏览器才会请求权限。
-
-## 启用真实 WebRTC 房间
-
-1. 启动本地 LiveKit：
+诊断并启动：
 
 ```powershell
+.\scripts\doctor.ps1 -ProviderMode mock
+.\scripts\start-demo.ps1 -ProviderMode mock
+```
+
+打开：
+
+- 用户数字人通话：`http://127.0.0.1:5173/`
+- API / 会话调试：`http://127.0.0.1:8000/docs`
+- 临床演示台：`http://127.0.0.1:5173/?view=clinician&session=<session_id>`
+
+mock 页面无需后端、LiveKit 或 GPU 也能展示通话、摄像头同意和降级交互；启动脚本同时拉起后端，便于演示会话 API 与临床台。
+
+## 真实 WebRTC 房间
+
+复制并确认本地配置：
+
+```powershell
+Copy-Item services\orchestrator\.env.example services\orchestrator\.env
 docker compose -f infra\docker-compose.yml up -d
+.\scripts\start-demo.ps1 -ProviderMode real
 ```
 
-2. 启动 Orchestrator：
+`real` 表示启用本地 LiveKit 和真实 provider 配置边界，不等于自动启用 RAD-NeRF GPU worker。真实数字人还需要独立 Python 3.10/CUDA 环境，并显式运行：
 
 ```powershell
-Set-Location services\orchestrator
-Copy-Item .env.example .env
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+$env:PSYAVATAR_RUN_GPU_TESTS="1"
+$env:RADNERF_SOURCE_ROOT="D:\experiment\fix_agent\RAD-NeRF\RAD-NeRF"
+Set-Location services\avatar_radnerf
+.\.venv\Scripts\python.exe -m pytest tests\test_engine_smoke.py -v
 ```
 
-3. 启动 LiveKit Web 模式：
+不要复用旧代码中的明文凭证；先轮换，再通过 `PSYAVATAR_*` 环境变量配置。健康接口只报告“是否配置”，不会输出值。
 
-```powershell
-Set-Location apps\web
-$env:VITE_MEDIA_MODE = "livekit"
-npm run dev
-```
+## API 会话流程
 
-本地配置仅用于开发。生产环境必须更换 LiveKit 密钥、启用应用身份认证，并使用可信 TLS/WSS 入口。
+1. `POST /api/sessions` 创建会话并取得一次性展示的 `access_token`。
+2. 后续用户接口携带 `Authorization: Bearer <token>`。
+3. `POST /api/livekit/token` 只为该会话签发单房间凭证。
+4. `POST /api/sessions/{id}/turns` 是 LiveKit 不可用时的文字回退。
+5. `POST /api/sessions/{id}/interrupt` 原子取消旧回合。
+6. `DELETE /api/sessions/{id}` 结束会话。
+
+临床演示接口额外要求 `X-Demo-Role: CLINICIAN_DEMO` 和与路径一致的 `X-Demo-Session`，且不返回完整逐字稿或原始媒体。
 
 ## 验证
 
-后端：
+一键运行 CPU/零 GPU 验收：
 
 ```powershell
-Set-Location services\orchestrator
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m ruff check app tests
-.\.venv\Scripts\python.exe -m mypy app
+.\scripts\verify-demo.ps1
 ```
 
-前端：
+它会执行：
 
-```powershell
-Set-Location apps\web
-npm run test -- --run
-npm run build
-```
+- Orchestrator 全部测试、Ruff、严格 mypy
+- RAD-NeRF worker 的 CPU 协议测试（GPU smoke 明确跳过）
+- Web 单元测试和生产构建
+- 固定风险与视觉安全报告
+
+当前固定集要求：
+
+- 高风险召回率 `100%`
+- 固定集分类准确率 `100%`
+- 视觉外观诊断接受数 `0`
+- 视觉单独升级风险数 `0`
+- SQLite 原始音频/视频/摄像头帧数 `0`
+
+这些是合成回归指标，不是临床有效性证明。真实上线前仍需要伦理、医疗、隐私、安全和人因评审。
 
 ## 不可突破的边界
 
-- 原始麦克风音频、摄像头视频和采样帧不落盘。
-- 视觉观察 10 秒后失效，不能从外貌推断精神诊断、性格或风险。
-- 用户令牌只能向一个生成的房间发布摄像头和麦克风轨道。
-- 摄像头暂停顺序固定为：停发轨道、更新本地状态、撤销服务端同意。
+- 原始音频、视频和采样帧不落盘。
+- 视觉观察 10 秒失效，不从外观推断精神诊断、人格、自伤或风险。
+- 大模型和视觉模型不能改写确定性风险等级。
 - V1 不自动联系医院、紧急联系人、公共机构或真实临床人员。
-- 真实模型凭证仅从 `PSYAVATAR_*` 环境变量读取，并以秘密字段隐藏。
+- 高影响工具必须经过策略检查、必要审批和幂等保护。
+- 真实凭证只从环境变量读取，并以秘密字段隐藏。

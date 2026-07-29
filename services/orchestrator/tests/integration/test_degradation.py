@@ -1,13 +1,35 @@
+import asyncio
+
 import pytest
 
+from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
 from app.realtime.avatar_client import MockAvatarClient
+from app.realtime.models import TurnHandle
 from app.realtime.session import (
     MockAudioBridge,
     MockVisionBridge,
     SessionManager,
     TurnStatus,
 )
+
+
+class BlockingVisionBridge:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def observe(
+        self,
+        *,
+        session_id: str,
+        turn: TurnHandle,
+        supplied_summary: str,
+    ) -> str:
+        _ = (session_id, turn)
+        self.started.set()
+        await self.release.wait()
+        return supplied_summary
 
 
 @pytest.mark.asyncio
@@ -76,3 +98,37 @@ async def test_tts_failure_falls_back_to_text_without_blocking(tmp_path) -> None
     assert "tts.degraded" in event_types
     assert "response.displayed" in event_types
     assert "avatar.frame.ready" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_camera_revocation_drops_inflight_vision_but_keeps_voice(
+    tmp_path,
+) -> None:
+    """Catches a late camera result re-entering context after consent withdrawal."""
+    store = EventStore(tmp_path / "events.sqlite3")
+    vision = BlockingVisionBridge()
+    manager = SessionManager(store=store, vision_bridge=vision)
+    session = await manager.create_session(camera_consent=True)
+    running = asyncio.create_task(
+        manager.process_text_turn(
+            session.session_id,
+            text="我想继续用语音聊。",
+            visual_summary="这段内容在撤销后不应出现。",
+        )
+    )
+    await asyncio.wait_for(vision.started.wait(), timeout=1)
+
+    await ConsentService(store).revoke(
+        session.session_id,
+        ConsentKind.CAMERA,
+    )
+    vision.release.set()
+    result = await asyncio.wait_for(running, timeout=1)
+
+    events = await store.list_session(session.session_id)
+    event_types = [event.type for event in events]
+    revoked_index = event_types.index("camera_consent_revoked")
+    assert result.status is TurnStatus.COMPLETED
+    assert "vision.observation.ready" not in event_types[revoked_index + 1 :]
+    assert "vision.cancelled" in event_types
+    assert "playback.started" in event_types

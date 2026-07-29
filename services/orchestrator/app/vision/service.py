@@ -121,6 +121,10 @@ def evaluate_fixture(path: Path) -> VisionFixtureReport:
         total += 1
         case = json.loads(line)
         name = str(case.get("name", f"case_{total}"))
+        if case.get("case_type") == "frame_gate":
+            if not isinstance(case.get("expected_decision"), str):
+                raise ValueError(f"invalid frame-gate fixture contract: {name}")
+            continue
         expected_valid = case.get("expected_valid")
         payload = case.get("payload")
         if not isinstance(expected_valid, bool) or not isinstance(payload, dict):

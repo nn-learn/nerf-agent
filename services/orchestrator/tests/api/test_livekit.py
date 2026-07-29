@@ -16,13 +16,16 @@ def _decode_claims(token: str) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_user_token_is_short_lived_and_scoped_to_one_session_room() -> None:
+async def test_user_token_is_short_lived_and_scoped_to_one_session_room(
+    tmp_path,
+) -> None:
     """Catches broad publish grants and client-controlled agent identities."""
     settings = Settings(
         provider_mode="mock",
         livekit_api_key="devkey",
         livekit_api_secret="secret-with-at-least-32-characters",
         livekit_url="ws://localhost:7880",
+        event_database_path=tmp_path / "events.sqlite3",
     )
     assert "secret-with-at-least-32-characters" not in repr(settings)
     transport = ASGITransport(app=create_app(settings))

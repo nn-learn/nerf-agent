@@ -89,6 +89,24 @@ async def test_client_cannot_reclaim_an_existing_session_id(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_cannot_reclaim_session_id_after_restart(tmp_path) -> None:
+    """Catches a new token becoming authorized for an old persisted timeline."""
+    store = EventStore(tmp_path / "events.sqlite3")
+    first_process = SessionManager(store=store)
+    await first_process.create_session(
+        requested_id="session_persisted",
+        camera_consent=False,
+    )
+    restarted_process = SessionManager(store=EventStore(store.database_path))
+
+    with pytest.raises(ValueError, match="already exists"):
+        await restarted_process.create_session(
+            requested_id="session_persisted",
+            camera_consent=False,
+        )
+
+
+@pytest.mark.asyncio
 async def test_session_api_creates_turns_and_ends_cleanly(tmp_path) -> None:
     """Catches the browser shell depending on orchestration routes that do not exist."""
     settings = Settings(

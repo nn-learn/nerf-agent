@@ -115,6 +115,6 @@ def test_checked_in_vision_fixture_has_no_appearance_diagnosis() -> None:
 
     report = evaluate_fixture(fixture_path)
 
-    assert report.total == 3
-    assert report.valid_observations == 2
+    assert report.total == 11
+    assert report.valid_observations == 8
     assert report.rejected_appearance_inferences == 1
