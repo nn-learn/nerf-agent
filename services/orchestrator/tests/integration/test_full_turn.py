@@ -69,6 +69,26 @@ async def test_session_http_fallback_supports_typed_turns(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_cannot_reclaim_an_existing_session_id(tmp_path) -> None:
+    """Catches unauthenticated session creation leaking an existing access token."""
+    store = EventStore(tmp_path / "events.sqlite3")
+    manager = SessionManager(store=store)
+
+    first = await manager.create_session(
+        requested_id="session_browser_1",
+        camera_consent=False,
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        await manager.create_session(
+            requested_id="session_browser_1",
+            camera_consent=False,
+        )
+
+    events = await store.list_session(first.session_id)
+    assert [event.type for event in events] == ["session.started"]
+
+
+@pytest.mark.asyncio
 async def test_session_api_creates_turns_and_ends_cleanly(tmp_path) -> None:
     """Catches the browser shell depending on orchestration routes that do not exist."""
     settings = Settings(
@@ -82,15 +102,23 @@ async def test_session_api_creates_turns_and_ends_cleanly(tmp_path) -> None:
             json={"camera_consent": False},
         )
         session_id = created.json()["session_id"]
+        headers = {
+            "Authorization": f"Bearer {created.json()['access_token']}"
+        }
         turn = await client.post(
             f"/api/sessions/{session_id}/turns",
+            headers=headers,
             json={"text": "我想先聊聊最近的睡眠。"},
         )
         inactive_interrupt = await client.post(
             f"/api/sessions/{session_id}/interrupt",
+            headers=headers,
             json={"reason": "user_speech"},
         )
-        ended = await client.delete(f"/api/sessions/{session_id}")
+        ended = await client.delete(
+            f"/api/sessions/{session_id}",
+            headers=headers,
+        )
 
     assert created.status_code == 201
     assert created.json()["provider_mode"] == "mock"

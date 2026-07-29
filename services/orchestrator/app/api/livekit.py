@@ -1,10 +1,12 @@
 from datetime import timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
 from livekit import api
 from pydantic import BaseModel, Field
 
+from app.realtime.session import SessionManager, SessionNotFoundError
+from app.security.auth import require_session_access
 from app.settings import Settings
 
 
@@ -19,11 +21,25 @@ class LiveKitTokenResponse(BaseModel):
     participant_token: str
 
 
-def create_livekit_router(settings: Settings) -> APIRouter:
+def create_livekit_router(
+    settings: Settings,
+    session_manager: SessionManager,
+) -> APIRouter:
     router = APIRouter(prefix="/api/livekit", tags=["livekit"])
 
     @router.post("/token", response_model=LiveKitTokenResponse)
-    async def create_token(request: LiveKitTokenRequest) -> LiveKitTokenResponse:
+    async def create_token(
+        request: LiveKitTokenRequest,
+        authorization: str | None = Header(default=None),
+    ) -> LiveKitTokenResponse:
+        try:
+            await require_session_access(
+                session_manager,
+                session_id=request.session_id,
+                authorization=authorization,
+            )
+        except SessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="session not found") from error
         if not (
             settings.livekit_url
             and settings.livekit_api_key

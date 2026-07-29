@@ -140,6 +140,9 @@ class HandoffService:
         )
         return accepted
 
+    def get(self, handoff_id: str) -> HandoffRecord | None:
+        return self._find_by_id(handoff_id)
+
     def _find_by_idempotency_key(self, idempotency_key: str) -> HandoffRecord | None:
         return self._find_one(
             "SELECT * FROM handoffs WHERE idempotency_key = ?",

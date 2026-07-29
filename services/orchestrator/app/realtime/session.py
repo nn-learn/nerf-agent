@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import secrets
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
@@ -61,6 +64,10 @@ class SessionDescriptor(BaseModel):
             "http_text",
         ]
     )
+
+
+class SessionCreated(SessionDescriptor):
+    access_token: str = Field(min_length=32, repr=False)
 
 
 class TurnResult(BaseModel):
@@ -148,6 +155,7 @@ class ActiveTurn:
 @dataclass(slots=True)
 class SessionRuntime:
     descriptor: SessionDescriptor
+    access_token_digest: str
     event_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn: ActiveTurn | None = None
 
@@ -180,16 +188,20 @@ class SessionManager:
         *,
         camera_consent: bool,
         requested_id: str | None = None,
-    ) -> SessionDescriptor:
+    ) -> SessionCreated:
         await self.store.initialize()
         session_id = requested_id or f"session_{uuid4().hex}"
+        access_token = f"pst_{secrets.token_urlsafe(32)}"
         descriptor = SessionDescriptor(
             session_id=session_id,
             status=SessionStatus.ACTIVE,
             provider_mode=self._provider_mode,
             camera_consent=camera_consent,
         )
-        runtime = SessionRuntime(descriptor=descriptor)
+        runtime = SessionRuntime(
+            descriptor=descriptor,
+            access_token_digest=self._token_digest(access_token),
+        )
         async with self._sessions_lock:
             if session_id in self._sessions:
                 raise ValueError("session id already exists")
@@ -205,7 +217,18 @@ class SessionManager:
         if camera_consent:
             await self._consent.grant(session_id, ConsentKind.CAMERA)
         await self._avatar.start_session(session_id)
-        return descriptor.model_copy(deep=True)
+        return SessionCreated(
+            **descriptor.model_dump(),
+            access_token=access_token,
+        )
+
+    async def has_access(self, session_id: str, access_token: str) -> bool:
+        runtime = await self._runtime(session_id)
+        supplied_digest = self._token_digest(access_token)
+        return hmac.compare_digest(
+            runtime.access_token_digest,
+            supplied_digest,
+        )
 
     async def get_session(self, session_id: str) -> SessionDescriptor:
         runtime = await self._runtime(session_id)
@@ -549,3 +572,7 @@ class SessionManager:
             response=response,
             delivery_mode="interrupted",
         )
+
+    @staticmethod
+    def _token_digest(access_token: str) -> str:
+        return hashlib.sha256(access_token.encode("utf-8")).hexdigest()

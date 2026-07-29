@@ -92,6 +92,7 @@ export function useLiveKitMediaSession(
 
     void (async () => {
       try {
+        await api.createSession(sessionId);
         const credentials = await api.getLiveKitToken(sessionId, "演示用户");
         await room.connect(
           credentials.server_url,
@@ -166,10 +167,22 @@ export function useLiveKitMediaSession(
     if (visionState === "active") {
       await pauseVision();
     }
+    if (microphoneEnabled) {
+      await api.setConsent(sessionId, "microphone", false);
+    }
     await room.disconnect();
+    await api.endSession(sessionId);
     setConnectionState("disconnected");
     setAgentState("disconnected");
-  }, [pauseVision, room, setAgentState, visionState]);
+  }, [
+    api,
+    microphoneEnabled,
+    pauseVision,
+    room,
+    sessionId,
+    setAgentState,
+    visionState,
+  ]);
 
   return {
     connectionState,

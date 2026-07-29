@@ -27,8 +27,17 @@ async def test_user_token_is_short_lived_and_scoped_to_one_session_room() -> Non
     assert "secret-with-at-least-32-characters" not in repr(settings)
     transport = ASGITransport(app=create_app(settings))
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/sessions",
+            json={
+                "client_session_id": "session_42",
+                "camera_consent": False,
+            },
+        )
+        access_token = created.json()["access_token"]
         response = await client.post(
             "/api/livekit/token",
+            headers={"Authorization": f"Bearer {access_token}"},
             json={
                 "session_id": "session_42",
                 "participant_name": "演示用户",
@@ -56,12 +65,26 @@ async def test_user_token_is_short_lived_and_scoped_to_one_session_room() -> Non
 
 
 @pytest.mark.asyncio
-async def test_token_endpoint_rejects_unconfigured_livekit() -> None:
+async def test_token_endpoint_rejects_unconfigured_livekit(tmp_path) -> None:
     """Catches accidental token signing with empty or fallback production secrets."""
-    transport = ASGITransport(app=create_app(Settings(provider_mode="mock")))
+    transport = ASGITransport(
+        app=create_app(
+            Settings(
+                provider_mode="mock",
+                event_database_path=tmp_path / "events.sqlite3",
+            )
+        )
+    )
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/sessions",
+            json={"client_session_id": "session_42"},
+        )
         response = await client.post(
             "/api/livekit/token",
+            headers={
+                "Authorization": f"Bearer {created.json()['access_token']}"
+            },
             json={"session_id": "session_42", "participant_name": "演示用户"},
         )
 
@@ -81,12 +104,24 @@ async def test_camera_consent_endpoint_persists_only_audited_transitions(
     )
     transport = ASGITransport(app=create_app(settings))
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/sessions",
+            json={
+                "client_session_id": "session_42",
+                "camera_consent": False,
+            },
+        )
+        headers = {
+            "Authorization": f"Bearer {created.json()['access_token']}"
+        }
         granted = await client.post(
             "/api/sessions/session_42/consents/camera",
+            headers=headers,
             json={"granted": True},
         )
         revoked = await client.post(
             "/api/sessions/session_42/consents/camera",
+            headers=headers,
             json={"granted": False},
         )
 
@@ -99,7 +134,7 @@ async def test_camera_consent_endpoint_persists_only_audited_transitions(
     assert revoked.status_code == 200
     store = EventStore(database_path)
     events = await store.list_session("session_42")
-    assert [event.type for event in events] == [
+    assert [event.type for event in events][1:] == [
         "camera_consent_granted",
         "camera_consent_revoked",
     ]

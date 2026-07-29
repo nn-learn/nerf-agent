@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,3 +19,4 @@ class Settings(BaseSettings):
     livekit_api_secret: SecretStr | None = None
     web_origin: str = "http://localhost:5173"
     event_database_path: Path = Path("runtime/events.sqlite3")
+    request_rate_limit_per_minute: int = Field(default=120, ge=1, le=10_000)

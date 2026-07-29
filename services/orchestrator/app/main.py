@@ -1,11 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.clinician import create_clinician_router
 from app.api.consents import create_consent_router
 from app.api.livekit import create_livekit_router
 from app.api.sessions import create_sessions_router
 from app.events.store import EventStore
 from app.realtime.session import SessionManager
+from app.security.middleware import (
+    InMemoryRateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.settings import Settings
 
 
@@ -23,9 +28,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type", "Authorization"],
     )
-    app.include_router(create_livekit_router(current))
+    app.add_middleware(
+        InMemoryRateLimitMiddleware,
+        requests_per_minute=current.request_rate_limit_per_minute,
+    )
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(create_livekit_router(current, session_manager))
     app.include_router(create_sessions_router(session_manager))
-    app.include_router(create_consent_router(event_store))
+    app.include_router(create_consent_router(event_store, session_manager))
+    app.include_router(create_clinician_router(event_store))
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
