@@ -91,6 +91,14 @@ class TurnCoordinator:
                 reason=reason,
             )
 
+    async def complete_turn(self, turn: TurnHandle) -> None:
+        async with self._lock:
+            active = self._active.get(turn.session_id)
+            if active != turn:
+                return
+            self._active.pop(turn.session_id, None)
+            await self.tokens.cancel(turn.cancel_token)
+
     @staticmethod
     def _drain(queue: asyncio.Queue[QueueItem]) -> None:
         while True:
