@@ -36,6 +36,6 @@ async def test_revoking_camera_consent_runs_cleanup_and_audits_transition(tmp_pa
     assert not await consent.is_granted("session_1", ConsentKind.CAMERA)
     events = await store.list_session("session_1")
     assert [event.type for event in events] == [
-        "consent.granted",
+        "camera_consent_granted",
         "camera_consent_revoked",
     ]

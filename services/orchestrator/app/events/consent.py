@@ -24,9 +24,14 @@ class ConsentService:
 
     async def grant(self, session_id: str, kind: ConsentKind) -> None:
         await self._store.set_consent(session_id, kind.value, True)
+        event_type = (
+            "camera_consent_granted"
+            if kind is ConsentKind.CAMERA
+            else "consent.granted"
+        )
         await self._store.append_payload(
             session_id=session_id,
-            event_type="consent.granted",
+            event_type=event_type,
             payload={"kind": kind.value},
         )
 
