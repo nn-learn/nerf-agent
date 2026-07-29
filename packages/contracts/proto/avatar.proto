@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package psyavatar.avatar.v1;
+
+service AvatarService {
+  rpc Session(stream AvatarCommand) returns (stream AvatarEvent);
+}
+
+message AvatarCommand {
+  string session_id = 1;
+  string turn_id = 2;
+  string cancel_token = 3;
+
+  oneof body {
+    StartSession start = 10;
+    AudioChunk audio = 11;
+    SetStyle style = 12;
+    CancelTurn cancel = 13;
+    SetQuality quality = 14;
+    EndSession end = 15;
+  }
+}
+
+message StartSession {
+  string room_name = 1;
+  string participant_identity = 2;
+}
+
+message AudioChunk {
+  uint64 sequence = 1;
+  uint64 pts_ms = 2;
+  bytes pcm_s16le_16khz_mono = 3;
+}
+
+message SetStyle {
+  string style = 1;
+}
+
+message CancelTurn {
+  string reason = 1;
+}
+
+message SetQuality {
+  uint32 width = 1;
+  uint32 height = 2;
+  uint32 fps = 3;
+}
+
+message EndSession {}
+
+message AvatarEvent {
+  string session_id = 1;
+  string turn_id = 2;
+  string cancel_token = 3;
+
+  oneof body {
+    Ready ready = 10;
+    FramePublished frame_published = 11;
+    BufferStatus buffer_status = 12;
+    Metrics metrics = 13;
+    Degraded degraded = 14;
+    Error error = 15;
+  }
+}
+
+message Ready {
+  string track_name = 1;
+}
+
+message FramePublished {
+  uint64 sequence = 1;
+  uint64 pts_ms = 2;
+}
+
+message BufferStatus {
+  uint32 audio_chunks = 1;
+  uint32 frames = 2;
+}
+
+message Metrics {
+  double fps = 1;
+  double first_frame_ms = 2;
+}
+
+message Degraded {
+  string reason = 1;
+  string fallback = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}

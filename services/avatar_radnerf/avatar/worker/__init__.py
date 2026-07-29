@@ -1,0 +1,1 @@
+"""Avatar worker state machine."""
