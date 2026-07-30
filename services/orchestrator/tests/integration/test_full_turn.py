@@ -2,10 +2,65 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.events.store import EventStore
+from app.graph.build import GraphDependencies, build_graph
 from app.main import create_app
+from app.providers.mock import MockAgentProvider
+from app.providers.protocols import AgentPlan
 from app.realtime.session import SessionManager, TurnStatus
-from app.safety.models import RiskLevel
+from app.safety.models import RiskAssessment, RiskLevel
+from app.safety.output_guard import OutputGuard
 from app.settings import Settings
+
+
+class TokenRecordingProvider(MockAgentProvider):
+    def __init__(self) -> None:
+        self.reply_call: tuple[str, str, RiskLevel] | None = None
+
+    async def plan_reply(
+        self,
+        transcript: str,
+        risk: RiskAssessment,
+        context: dict[str, object],
+        *,
+        turn_id: str,
+        cancel_token: str,
+    ) -> AgentPlan:
+        self.reply_call = (turn_id, cancel_token, risk.level)
+        return await super().plan_reply(
+            transcript,
+            risk,
+            context,
+            turn_id=turn_id,
+            cancel_token=cancel_token,
+        )
+
+
+@pytest.mark.asyncio
+async def test_session_propagates_active_turn_token_to_agent_provider(tmp_path) -> None:
+    """Catches session orchestration replacing or dropping the active cancellation token."""
+    store = EventStore(tmp_path / "events.sqlite3")
+    provider = TokenRecordingProvider()
+    manager = SessionManager(store=store)
+    manager._graph = build_graph(  # noqa: SLF001
+        GraphDependencies(
+            agent_provider=provider,
+            output_guard=OutputGuard(),
+        )
+    )
+    session = await manager.create_session(camera_consent=False)
+
+    result = await manager.process_text_turn(
+        session.session_id,
+        text="最近压力很大",
+    )
+
+    events = await store.list_session(session.session_id)
+    turn_events = [event for event in events if event.turn_id == result.turn_id]
+    assert provider.reply_call == (
+        result.turn_id,
+        turn_events[0].cancel_token,
+        RiskLevel.GREEN,
+    )
 
 
 @pytest.mark.asyncio

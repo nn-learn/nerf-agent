@@ -1,23 +1,41 @@
 from typing import Protocol
 
+from pydantic import BaseModel, Field
+
 from app.safety.models import AgentResponse, RiskAssessment
 
 
-class AgentProvider(Protocol):
-    def load_context(
-        self, transcript: str, visual_summary: str
-    ) -> dict[str, object]: ...
+class AgentPlan(BaseModel):
+    response: AgentResponse
+    provider_metrics: dict[str, int | float | str] = Field(
+        default_factory=dict
+    )
 
-    def plan_reply(
+
+class AgentProvider(Protocol):
+    async def load_context(
+        self,
+        transcript: str,
+        visual_summary: str,
+        risk: RiskAssessment,
+    ) -> dict[str, object]:
+        raise NotImplementedError
+
+    async def plan_reply(
         self,
         transcript: str,
         risk: RiskAssessment,
         context: dict[str, object],
-    ) -> AgentResponse: ...
+        *,
+        turn_id: str,
+        cancel_token: str,
+    ) -> AgentPlan:
+        raise NotImplementedError
 
-    def plan_crisis(
+    async def plan_crisis(
         self,
         transcript: str,
         risk: RiskAssessment,
-    ) -> AgentResponse: ...
+    ) -> AgentPlan:
+        raise NotImplementedError
 

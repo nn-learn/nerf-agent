@@ -42,30 +42,38 @@ def build_graph(
             "visited": ["final_risk"],
         }
 
-    def context_fetch(state: AgentState) -> dict[str, object]:
+    async def context_fetch(state: AgentState) -> dict[str, object]:
         return {
-            "context": dependencies.agent_provider.load_context(
-                state["transcript"], state.get("visual_summary", "")
+            "context": await dependencies.agent_provider.load_context(
+                state["transcript"],
+                state.get("visual_summary", ""),
+                state["risk"],
             ),
             "visited": ["context_fetch"],
         }
 
-    def reply_planner(state: AgentState) -> dict[str, object]:
+    async def reply_planner(state: AgentState) -> dict[str, object]:
+        plan = await dependencies.agent_provider.plan_reply(
+            transcript=state["transcript"],
+            risk=state["risk"],
+            context=state["context"],
+            turn_id=state["turn_id"],
+            cancel_token=state["cancel_token"],
+        )
         return {
-            "candidate_response": dependencies.agent_provider.plan_reply(
-                transcript=state["transcript"],
-                risk=state["risk"],
-                context=state["context"],
-            ),
+            "candidate_response": plan.response,
+            "provider_metrics": plan.provider_metrics,
             "visited": ["reply_planner"],
         }
 
-    def crisis_policy(state: AgentState) -> dict[str, object]:
+    async def crisis_policy(state: AgentState) -> dict[str, object]:
+        plan = await dependencies.agent_provider.plan_crisis(
+            transcript=state["transcript"],
+            risk=state["risk"],
+        )
         return {
-            "candidate_response": dependencies.agent_provider.plan_crisis(
-                transcript=state["transcript"],
-                risk=state["risk"],
-            ),
+            "candidate_response": plan.response,
+            "provider_metrics": plan.provider_metrics,
             "visited": ["crisis_policy"],
         }
 

@@ -1,19 +1,54 @@
+from typing import Protocol
+
+from app.providers.ollama_text import OllamaTextProvider
 from app.providers.protocols import AgentPlan
-from app.safety.models import AgentResponse, RiskAssessment
+from app.rag.retriever import EvidenceBundle
+from app.safety.models import AgentResponse, RiskAssessment, RiskLevel
 
 
-class MockAgentProvider:
+class ReviewedRetriever(Protocol):
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        risk_level: RiskLevel,
+        k: int,
+    ) -> EvidenceBundle:
+        raise NotImplementedError
+
+
+class LocalAgentProvider:
+    def __init__(
+        self,
+        *,
+        text_provider: OllamaTextProvider,
+        retriever: ReviewedRetriever,
+        top_k: int = 3,
+    ) -> None:
+        self._text = text_provider
+        self._retriever = retriever
+        self._top_k = top_k
+
     async def load_context(
         self,
         transcript: str,
         visual_summary: str,
         risk: RiskAssessment,
     ) -> dict[str, object]:
+        bundle = await self._retriever.retrieve(
+            transcript,
+            risk_level=risk.level,
+            k=self._top_k,
+        )
         return {
+            "transcript": transcript,
+            "visual_summary": visual_summary,
+            "reviewed_evidence": [
+                item.model_dump(mode="json") for item in bundle.items
+            ],
+            "has_sufficient_evidence": bundle.has_sufficient_evidence,
             "working_memory": [],
             "long_term_memory": [],
-            "evidence": [],
-            "visual_summary": visual_summary,
         }
 
     async def plan_reply(
@@ -25,18 +60,15 @@ class MockAgentProvider:
         turn_id: str,
         cancel_token: str,
     ) -> AgentPlan:
+        result = await self._text.respond(
+            context,
+            turn_id=turn_id,
+            cancel_token=cancel_token,
+            risk_level=risk.level,
+        )
         return AgentPlan(
-            response=AgentResponse(
-                spoken_text="我听见你正在承受压力，我们可以慢慢说。",
-                display_text="我听见你正在承受压力，我们可以慢慢说。",
-                support_mode="listen",
-                risk_level=risk.level,
-                evidence_ids=[],
-                visual_observation_ids=[],
-                action_proposals=[],
-                memory_candidates=[],
-                avatar_style="warm",
-            )
+            response=result.response,
+            provider_metrics=result.metrics.model_dump(),
         )
 
     async def plan_crisis(
@@ -66,6 +98,6 @@ class MockAgentProvider:
                 ],
                 memory_candidates=[],
                 avatar_style="handoff_calm",
-            )
+            ),
+            provider_metrics={"provider": "deterministic_crisis"},
         )
-

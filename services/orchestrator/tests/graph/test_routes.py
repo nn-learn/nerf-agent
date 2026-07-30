@@ -1,17 +1,87 @@
-from langgraph.checkpoint.sqlite import SqliteSaver
+from pathlib import Path
+
+import pytest
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.graph.build import GraphDependencies, build_graph
-from app.safety.models import RiskLevel
+from app.providers.protocols import AgentPlan
+from app.safety.models import AgentResponse, RiskAssessment, RiskLevel
 
 
-def test_green_turn_fetches_context_before_reply() -> None:
-    """Catches normal turns that bypass governed context or output validation."""
-    graph = build_graph(GraphDependencies.for_mock())
+def agent_response(risk_level: RiskLevel, *, support_mode: str) -> AgentResponse:
+    return AgentResponse(
+        spoken_text="我听见你正在承受压力，我们可以慢慢说。",
+        display_text="我听见你正在承受压力，我们可以慢慢说。",
+        support_mode=support_mode,
+        risk_level=risk_level,
+        evidence_ids=[],
+        visual_observation_ids=[],
+        action_proposals=[],
+        memory_candidates=[],
+        avatar_style="handoff_calm" if support_mode == "handoff" else "warm",
+    )
 
-    result = graph.invoke(
+
+class RecordingAgentProvider:
+    def __init__(self) -> None:
+        self.context_call: tuple[str, str, RiskLevel] | None = None
+        self.reply_call: tuple[str, str, RiskLevel] | None = None
+        self.crisis_call: tuple[str, RiskLevel] | None = None
+
+    async def load_context(
+        self,
+        transcript: str,
+        visual_summary: str,
+        risk: RiskAssessment,
+    ) -> dict[str, object]:
+        self.context_call = (transcript, visual_summary, risk.level)
+        return {"reviewed_evidence": []}
+
+    async def plan_reply(
+        self,
+        transcript: str,
+        risk: RiskAssessment,
+        context: dict[str, object],
+        *,
+        turn_id: str,
+        cancel_token: str,
+    ) -> AgentPlan:
+        _ = transcript, context
+        self.reply_call = (turn_id, cancel_token, risk.level)
+        return AgentPlan(
+            response=agent_response(risk.level, support_mode="listen"),
+            provider_metrics={"provider": "recording_normal"},
+        )
+
+    async def plan_crisis(
+        self,
+        transcript: str,
+        risk: RiskAssessment,
+    ) -> AgentPlan:
+        self.crisis_call = (transcript, risk.level)
+        return AgentPlan(
+            response=agent_response(risk.level, support_mode="handoff"),
+            provider_metrics={"provider": "deterministic_crisis"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_green_turn_fetches_context_before_reply() -> None:
+    """Catches normal turns that bypass governed context or cancellation metadata."""
+    provider = RecordingAgentProvider()
+    graph = build_graph(
+        GraphDependencies(
+            agent_provider=provider,
+            output_guard=GraphDependencies.for_mock().output_guard,
+        )
+    )
+
+    result = await graph.ainvoke(
         {
-            "transcript": "我最近工作压力有点大",
+            "transcript": "最近压力很大",
             "visual_summary": "",
+            "turn_id": "turn_1",
+            "cancel_token": "ct_1",
             "visited": [],
         }
     )
@@ -27,17 +97,29 @@ def test_green_turn_fetches_context_before_reply() -> None:
         "publish_response",
         "propose_memory",
     ]
+    assert provider.context_call == ("最近压力很大", "", RiskLevel.GREEN)
+    assert provider.reply_call == ("turn_1", "ct_1", RiskLevel.GREEN)
     assert result["response"].support_mode == "listen"
+    assert result["provider_metrics"] == {"provider": "recording_normal"}
 
 
-def test_emergency_turn_bypasses_normal_context_and_uses_crisis_policy() -> None:
-    """Catches emergency turns that continue through normal RAG and memory paths."""
-    graph = build_graph(GraphDependencies.for_mock())
+@pytest.mark.asyncio
+async def test_emergency_turn_bypasses_normal_context_and_uses_crisis_policy() -> None:
+    """Catches emergency turns that call normal retrieval or Ollama planning."""
+    provider = RecordingAgentProvider()
+    graph = build_graph(
+        GraphDependencies(
+            agent_provider=provider,
+            output_guard=GraphDependencies.for_mock().output_guard,
+        )
+    )
 
-    result = graph.invoke(
+    result = await graph.ainvoke(
         {
             "transcript": "我现在正在伤害自己",
             "visual_summary": "",
+            "turn_id": "turn_1",
+            "cancel_token": "ct_1",
             "visited": [],
         }
     )
@@ -46,25 +128,35 @@ def test_emergency_turn_bypasses_normal_context_and_uses_crisis_policy() -> None
     assert "crisis_policy" in result["visited"]
     assert "context_fetch" not in result["visited"]
     assert "reply_planner" not in result["visited"]
+    assert provider.context_call is None
+    assert provider.reply_call is None
+    assert provider.crisis_call == ("我现在正在伤害自己", RiskLevel.EMERGENCY)
     assert result["response"].support_mode == "handoff"
+    assert result["provider_metrics"] == {"provider": "deterministic_crisis"}
 
 
-def test_graph_state_round_trips_through_sqlite_checkpoint(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_graph_state_round_trips_through_sqlite_checkpoint(
+    tmp_path: Path,
+) -> None:
     """Catches graph state that cannot be resumed or audited by session thread ID."""
     checkpoint_path = tmp_path / "checkpoints.sqlite3"
     config = {"configurable": {"thread_id": "session_1"}}
 
-    with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
         graph = build_graph(GraphDependencies.for_mock(), checkpointer=checkpointer)
-        graph.invoke(
+        await graph.ainvoke(
             {
-                "transcript": "我最近工作压力有点大",
+                "transcript": "最近工作压力有点大",
                 "visual_summary": "",
+                "turn_id": "turn_1",
+                "cancel_token": "ct_1",
                 "visited": [],
             },
             config,
         )
-        snapshot = graph.get_state(config)
+        snapshot = await graph.aget_state(config)
 
     assert snapshot.values["risk"].level is RiskLevel.GREEN
     assert snapshot.values["response"].support_mode == "listen"
+    assert snapshot.values["provider_metrics"] == {}

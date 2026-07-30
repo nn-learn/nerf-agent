@@ -321,6 +321,8 @@ class SessionManager:
                 {
                     "transcript": transcript,
                     "visual_summary": effective_visual_summary,
+                    "turn_id": turn.turn_id,
+                    "cancel_token": turn.cancel_token,
                     "visited": [],
                 }
             )

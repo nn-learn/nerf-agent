@@ -29,6 +29,11 @@ dev = [
   "types-PyYAML>=6.0,<7",
 ]
 
+rag = [
+  "sentence-transformers>=5,<6",
+  "PyYAML>=6,<7",
+]
+
 speech = [
   "edge-tts>=7.2.8,<8",
   "faster-whisper>=1.2.1,<2",
