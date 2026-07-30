@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.api.clinician import create_clinician_router
 from app.api.consents import create_consent_router
 from app.api.livekit import create_livekit_router
+from app.api.realtime import create_realtime_router
 from app.api.sessions import create_sessions_router
 from app.events.store import EventStore
 from app.providers.runtime import RuntimeProviders, build_runtime_providers
@@ -85,6 +86,13 @@ def create_app(
     )
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(create_livekit_router(current, session_manager))
+    app.include_router(
+        create_realtime_router(
+            settings=current,
+            manager=session_manager,
+            transcriber=providers.transcriber,
+        )
+    )
     app.include_router(create_sessions_router(session_manager))
     app.include_router(create_consent_router(event_store, session_manager))
     app.include_router(create_clinician_router(event_store))

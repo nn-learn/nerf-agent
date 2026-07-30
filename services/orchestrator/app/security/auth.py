@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from fastapi import HTTPException, status
 
 from app.realtime.session import SessionManager
@@ -32,3 +34,49 @@ async def require_session_access(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="session access denied",
         )
+
+
+def websocket_origin_allowed(
+    origin: str | None,
+    *,
+    configured_origin: str,
+) -> bool:
+    if origin is None:
+        return False
+    actual = urlsplit(origin)
+    configured = urlsplit(configured_origin)
+    return (
+        actual.scheme.lower(),
+        actual.hostname,
+        actual.port,
+        actual.path.rstrip("/"),
+        actual.query,
+        actual.fragment,
+    ) == (
+        configured.scheme.lower(),
+        configured.hostname,
+        configured.port,
+        configured.path.rstrip("/"),
+        configured.query,
+        configured.fragment,
+    )
+
+
+def websocket_transport_allowed(
+    *,
+    scheme: str,
+    request_host: str | None,
+    configured_origin: str,
+) -> bool:
+    if scheme.lower() == "wss":
+        return True
+    if scheme.lower() != "ws":
+        return False
+    origin_host = urlsplit(configured_origin).hostname
+    return _is_loopback_host(request_host) and _is_loopback_host(origin_host)
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    if host is None:
+        return False
+    return host.lower().strip("[]") in {"localhost", "127.0.0.1", "::1"}
