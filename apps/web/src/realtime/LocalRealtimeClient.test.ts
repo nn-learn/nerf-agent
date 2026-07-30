@@ -205,6 +205,37 @@ describe("LocalRealtimeClient", () => {
     expect(socket.onclose).toBeNull();
   });
 
+  it("can retry after a synchronous socket factory failure", async () => {
+    const recoveredSocket = new FakeWebSocket(
+      "ws://localhost/realtime",
+    );
+    const socketFactory = vi
+      .fn<(url: string) => WebSocket>()
+      .mockImplementationOnce(() => {
+        throw new Error("factory unavailable");
+      })
+      .mockImplementationOnce(
+        () => recoveredSocket as unknown as WebSocket,
+      );
+    const client = new LocalRealtimeClient(
+      recoveredSocket.url,
+      "a".repeat(32),
+      socketFactory,
+    );
+
+    await expect(client.connect()).rejects.toThrow("factory unavailable");
+    const recovered = client.connect();
+    expect(socketFactory).toHaveBeenCalledTimes(2);
+    recoveredSocket.open();
+    recoveredSocket.receiveJson({
+      type: "session.ready",
+      session_id: "session_1",
+    });
+
+    await expect(recovered).resolves.toBeUndefined();
+    client.close();
+  });
+
   it("rejects and releases the socket when transport setup errors", async () => {
     const { client, socket } = setupClient();
     const connected = client.connect();

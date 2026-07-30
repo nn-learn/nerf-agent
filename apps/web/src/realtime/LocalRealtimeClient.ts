@@ -50,10 +50,11 @@ export class LocalRealtimeClient {
     if (this.ready) return Promise.resolve();
     if (this.connectionPromise) return this.connectionPromise;
 
-    this.connectionPromise = new Promise<void>((resolve, reject) => {
+    const connectionPromise = new Promise<void>((resolve, reject) => {
       this.resolveConnection = resolve;
       this.rejectConnection = reject;
     });
+    this.connectionPromise = connectionPromise;
     try {
       const socket = this.socketFactory(this.url);
       this.socket = socket;
@@ -73,6 +74,7 @@ export class LocalRealtimeClient {
       };
       socket.onerror = () => {
         if (this.socket !== socket || this.closed) return;
+        const wasReady = this.ready;
         const error = new Error("Realtime connection failed");
         this.notifyError(error);
         this.rejectPending(error);
@@ -80,12 +82,14 @@ export class LocalRealtimeClient {
         this.ready = false;
         this.captureActive = false;
         this.activeStream = undefined;
-        this.closed = true;
+        this.closed = wasReady;
         this.detachSocket(socket);
         if (socket.readyState < 2) {
           socket.close();
         }
-        this.handlers.clear();
+        if (wasReady) {
+          this.handlers.clear();
+        }
       };
       socket.onclose = (event) => {
         if (this.socket !== socket) return;
@@ -112,9 +116,18 @@ export class LocalRealtimeClient {
         error instanceof Error
           ? error
           : new Error("Realtime connection failed");
+      const socket = this.socket;
+      this.socket = undefined;
+      if (socket) {
+        this.detachSocket(socket);
+        if (socket.readyState < 2) {
+          socket.close();
+        }
+      }
+      this.notifyError(connectionError);
       this.rejectPending(connectionError);
     }
-    return this.connectionPromise;
+    return connectionPromise;
   }
 
   startAudio(): void {
@@ -168,15 +181,12 @@ export class LocalRealtimeClient {
     this.rejectPending(new Error("Realtime client closed"));
     const socket = this.socket;
     this.socket = undefined;
+    this.handlers.clear();
     if (!socket) return;
-    socket.onopen = null;
-    socket.onmessage = null;
-    socket.onerror = null;
-    socket.onclose = null;
+    this.detachSocket(socket);
     if (socket.readyState < 2) {
       socket.close();
     }
-    this.handlers.clear();
   }
 
   private handleSocketMessage(data: unknown): void {
@@ -202,8 +212,7 @@ export class LocalRealtimeClient {
 
     if (message.type === "session.ready") {
       this.ready = true;
-      this.resolveConnection?.();
-      this.clearPendingConnection();
+      this.resolvePending();
     } else if (message.type === "audio.start") {
       if (this.retiredTurnIds.has(message.turn_id)) return;
       this.activeStream = message;
@@ -275,11 +284,19 @@ export class LocalRealtimeClient {
   }
 
   private rejectPending(error: Error): void {
-    this.rejectConnection?.(error);
+    const reject = this.rejectConnection;
     this.clearPendingConnection();
+    reject?.(error);
+  }
+
+  private resolvePending(): void {
+    const resolve = this.resolveConnection;
+    this.clearPendingConnection();
+    resolve?.();
   }
 
   private clearPendingConnection(): void {
+    this.connectionPromise = undefined;
     this.resolveConnection = undefined;
     this.rejectConnection = undefined;
   }

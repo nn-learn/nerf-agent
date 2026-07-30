@@ -76,6 +76,44 @@ it("captures constrained mono audio, frames it, and releases every resource", as
 });
 
 describe("MicrophoneCapture startup cleanup", () => {
+  it("shares one acquisition across concurrent start calls", async () => {
+    let resolveStream!: (stream: MediaStream) => void;
+    const streamPromise = new Promise<MediaStream>((resolve) => {
+      resolveStream = resolve;
+    });
+    const stop = vi.fn();
+    const getUserMedia = vi.fn(() => streamPromise);
+    const source = new FakeNode();
+    const worklet = new FakeWorkletNode();
+    const gain = Object.assign(new FakeNode(), { gain: { value: 1 } });
+    const context = {
+      sampleRate: 48_000,
+      audioWorklet: { addModule: vi.fn(async () => undefined) },
+      destination: new FakeNode(),
+      createMediaStreamSource: vi.fn(() => source),
+      createGain: vi.fn(() => gain),
+      close: vi.fn(async () => undefined),
+    } as unknown as AudioContext;
+    const capture = new MicrophoneCapture({
+      contextFactory: () => context,
+      getUserMedia,
+      workletFactory: () => worklet as unknown as AudioWorkletNode,
+    });
+
+    const first = capture.start(vi.fn());
+    const second = capture.start(vi.fn());
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    resolveStream({
+      getTracks: () => [{ stop }],
+    } as unknown as MediaStream);
+
+    await Promise.all([first, second]);
+    await capture.stop();
+    expect(stop).toHaveBeenCalledOnce();
+    await capture.stop();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("stops acquired media if worklet setup fails", async () => {
     const stop = vi.fn();
     const context = {

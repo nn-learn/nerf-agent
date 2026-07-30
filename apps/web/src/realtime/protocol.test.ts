@@ -32,6 +32,20 @@ describe("parseServerMessage", () => {
     ).toThrow("Invalid realtime message");
   });
 
+  it.each([
+    { type: "pong", unexpected: "raw-pcm-marker" },
+    {
+      type: "assistant.response.ready",
+      display_text: "ok",
+      raw_audio: "sensitive",
+    },
+    { type: "error", code: "X", message: 42 },
+  ])("rejects undeclared fields on $type", (payload) => {
+    expect(() => parseServerMessage(payload)).toThrow(
+      "Invalid realtime message",
+    );
+  });
+
   it("normalizes the backend response-ready wire event", () => {
     const response = parseServerMessage({
       type: "assistant.response.ready",

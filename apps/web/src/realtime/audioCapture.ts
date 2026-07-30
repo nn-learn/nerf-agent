@@ -37,6 +37,7 @@ export class MicrophoneCapture {
   private worklet?: AudioWorkletNode;
   private silentGain?: GainNode;
   private resampler?: Pcm16Resampler;
+  private startPromise?: Promise<void>;
   private generation = 0;
 
   constructor(
@@ -45,11 +46,59 @@ export class MicrophoneCapture {
     this.dependencies = { ...defaultDependencies, ...dependencies };
   }
 
-  async start(onFrame: (frame: ArrayBuffer) => void): Promise<void> {
-    if (this.context) return;
+  start(onFrame: (frame: ArrayBuffer) => void): Promise<void> {
+    if (this.context) return Promise.resolve();
+    if (this.startPromise) return this.startPromise;
     const generation = ++this.generation;
+    const startup = this.startOwned(onFrame, generation).finally(() => {
+      if (this.startPromise === startup) {
+        this.startPromise = undefined;
+      }
+    });
+    this.startPromise = startup;
+    return startup;
+  }
+
+  async stop(): Promise<void> {
+    this.generation += 1;
+    const startup = this.startPromise;
+    if (startup) {
+      try {
+        await startup;
+      } catch {
+        // Startup owns and releases any partially acquired resources.
+      }
+    }
+
+    const resources = {
+      context: this.context,
+      stream: this.stream,
+      source: this.source,
+      worklet: this.worklet,
+      silentGain: this.silentGain,
+      resampler: this.resampler,
+    };
+    this.context = undefined;
+    this.stream = undefined;
+    this.source = undefined;
+    this.worklet = undefined;
+    this.silentGain = undefined;
+    this.resampler = undefined;
+    await this.release(resources);
+  }
+
+  private async startOwned(
+    onFrame: (frame: ArrayBuffer) => void,
+    generation: number,
+  ): Promise<void> {
+    let stream: MediaStream | undefined;
+    let context: AudioContext | undefined;
+    let source: MediaStreamAudioSourceNode | undefined;
+    let worklet: AudioWorkletNode | undefined;
+    let silentGain: GainNode | undefined;
+    let resampler: Pcm16Resampler | undefined;
     try {
-      this.stream = await this.dependencies.getUserMedia({
+      stream = await this.dependencies.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -59,28 +108,31 @@ export class MicrophoneCapture {
         video: false,
       });
       if (generation !== this.generation) {
-        this.stream.getTracks().forEach((track) => track.stop());
-        this.stream = undefined;
+        await this.release({ stream });
         return;
       }
 
-      this.context = this.dependencies.contextFactory();
-      this.resampler = new Pcm16Resampler(
-        this.context.sampleRate,
+      context = this.dependencies.contextFactory();
+      resampler = new Pcm16Resampler(
+        context.sampleRate,
         16_000,
         320,
       );
-      await this.context.audioWorklet.addModule(
+      await context.audioWorklet.addModule(
         "/pcm-capture-processor.js",
       );
-      this.source = this.context.createMediaStreamSource(this.stream);
-      this.worklet = this.dependencies.workletFactory(
-        this.context,
+      if (generation !== this.generation) {
+        await this.release({ context, stream, resampler });
+        return;
+      }
+      source = context.createMediaStreamSource(stream);
+      worklet = this.dependencies.workletFactory(
+        context,
         "pcm-capture-processor",
       );
-      this.silentGain = this.context.createGain();
-      this.silentGain.gain.value = 0;
-      this.worklet.port.onmessage = (
+      silentGain = context.createGain();
+      silentGain.gain.value = 0;
+      worklet.port.onmessage = (
         event: MessageEvent<Float32Array>,
       ) => {
         if (
@@ -89,37 +141,49 @@ export class MicrophoneCapture {
         ) {
           return;
         }
-        for (const frame of this.resampler?.push(event.data) ?? []) {
+        for (const frame of resampler?.push(event.data) ?? []) {
           onFrame(frame);
         }
       };
-      this.source.connect(this.worklet);
-      this.worklet.connect(this.silentGain);
-      this.silentGain.connect(this.context.destination);
+      source.connect(worklet);
+      worklet.connect(silentGain);
+      silentGain.connect(context.destination);
+      this.context = context;
+      this.stream = stream;
+      this.source = source;
+      this.worklet = worklet;
+      this.silentGain = silentGain;
+      this.resampler = resampler;
     } catch (error) {
-      await this.stop();
+      await this.release({
+        context,
+        stream,
+        source,
+        worklet,
+        silentGain,
+        resampler,
+      });
       throw error;
     }
   }
 
-  async stop(): Promise<void> {
-    this.generation += 1;
-    if (this.worklet) {
-      this.worklet.port.onmessage = null;
+  private async release(resources: {
+    context?: AudioContext;
+    stream?: MediaStream;
+    source?: MediaStreamAudioSourceNode;
+    worklet?: AudioWorkletNode;
+    silentGain?: GainNode;
+    resampler?: Pcm16Resampler;
+  }): Promise<void> {
+    if (resources.worklet) {
+      resources.worklet.port.onmessage = null;
     }
-    this.source?.disconnect();
-    this.worklet?.disconnect();
-    this.silentGain?.disconnect();
-    this.stream?.getTracks().forEach((track) => track.stop());
-    this.resampler?.reset();
-
-    const context = this.context;
-    this.context = undefined;
-    this.stream = undefined;
-    this.source = undefined;
-    this.worklet = undefined;
-    this.silentGain = undefined;
-    this.resampler = undefined;
+    resources.source?.disconnect();
+    resources.worklet?.disconnect();
+    resources.silentGain?.disconnect();
+    resources.stream?.getTracks().forEach((track) => track.stop());
+    resources.resampler?.reset();
+    const context = resources.context;
     if (context && context.state !== "closed") {
       await context.close();
     }
