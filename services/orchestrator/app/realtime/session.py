@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 import hmac
 import secrets
+import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
@@ -12,12 +14,16 @@ from pydantic import BaseModel, Field
 from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
 from app.graph.build import GraphDependencies, build_graph
+from app.providers.faster_whisper import FasterWhisperProvider
+from app.providers.mock import MockAgentProvider
+from app.providers.protocols import AgentProvider
 from app.realtime.avatar_client import (
     AvatarClient,
     AvatarUnavailable,
     MockAvatarClient,
 )
-from app.realtime.models import PcmChunk, TurnHandle
+from app.realtime.models import PcmChunk, TranscriptKind, TurnHandle
+from app.realtime.observer import NullTurnObserver, TurnObserver
 from app.realtime.turn_coordinator import TurnCoordinator
 from app.safety.models import AgentResponse, RiskAssessment, RiskLevel
 
@@ -99,12 +105,12 @@ class VisionBridge(Protocol):
 
 
 class AudioBridge(Protocol):
-    async def synthesize(
+    def synthesize(
         self,
         text: str,
         *,
         turn: TurnHandle,
-    ) -> list[PcmChunk]: ...
+    ) -> AsyncIterator[PcmChunk]: ...
 
 
 class MockVisionBridge:
@@ -133,23 +139,22 @@ class MockAudioBridge:
         text: str,
         *,
         turn: TurnHandle,
-    ) -> list[PcmChunk]:
+    ) -> AsyncIterator[PcmChunk]:
         _ = (text, turn)
         if not self.available:
             raise AudioUnavailable("mock TTS provider is unavailable")
-        return [
-            PcmChunk(
-                sequence=0,
-                pts_ms=0,
-                pcm_s16le=b"\x00\x00" * 320,
-            )
-        ]
+        yield PcmChunk(
+            sequence=0,
+            pts_ms=0,
+            pcm_s16le=b"\x00\x00" * 320,
+        )
 
 
 @dataclass(slots=True)
 class ActiveTurn:
     handle: TurnHandle
     trace_id: str
+    synthesize_audio: bool = True
 
 
 @dataclass(slots=True)
@@ -167,6 +172,8 @@ class SessionManager:
         self,
         *,
         store: EventStore,
+        coordinator: TurnCoordinator | None = None,
+        agent_provider: AgentProvider | None = None,
         avatar_client: AvatarClient | None = None,
         vision_bridge: VisionBridge | None = None,
         audio_bridge: AudioBridge | None = None,
@@ -177,8 +184,13 @@ class SessionManager:
         self._vision = vision_bridge or MockVisionBridge()
         self._audio = audio_bridge or MockAudioBridge()
         self._provider_mode = provider_mode
-        self._coordinator = TurnCoordinator()
-        self._graph = build_graph(GraphDependencies.for_mock())
+        self._coordinator = coordinator or TurnCoordinator()
+        self._graph = build_graph(
+            GraphDependencies(
+                agent_provider=agent_provider or MockAgentProvider(),
+                output_guard=GraphDependencies.for_mock().output_guard,
+            )
+        )
         self._sessions: dict[str, SessionRuntime] = {}
         self._sessions_lock = asyncio.Lock()
         self._consent = ConsentService(store)
@@ -243,140 +255,276 @@ class SessionManager:
         *,
         text: str,
         visual_summary: str = "",
+        synthesize_audio: bool = True,
+        observer: TurnObserver | None = None,
     ) -> TurnResult:
         transcript = text.strip()
         if not transcript:
             raise ValueError("turn text must not be blank")
         runtime = await self._runtime(session_id)
+        active = await self._begin_turn(
+            runtime,
+            synthesize_audio=synthesize_audio,
+        )
+        current_observer = observer or NullTurnObserver()
+        try:
+            return await self._process_active_turn(
+                runtime,
+                active,
+                transcript=transcript,
+                input_mode="typed_text",
+                visual_summary=visual_summary,
+                observer=current_observer,
+            )
+        finally:
+            await self._finish_if_active(runtime, active)
+
+    async def process_audio_turn(
+        self,
+        session_id: str,
+        *,
+        chunks: AsyncIterator[PcmChunk],
+        transcriber: FasterWhisperProvider,
+        observer: TurnObserver | None = None,
+    ) -> TurnResult:
+        runtime = await self._runtime(session_id)
         active = await self._begin_turn(runtime)
+        current_observer = observer or NullTurnObserver()
         turn = active.handle
-        trace_id = active.trace_id
+        transcript = ""
+        stt_started_ns = time.perf_counter_ns()
+        try:
+            async for transcript_event in transcriber.transcribe(
+                chunks,
+                turn_id=turn.turn_id,
+                cancel_token=turn.cancel_token,
+            ):
+                if transcript_event.kind is TranscriptKind.PARTIAL:
+                    observed = await self._observe_current(
+                        runtime,
+                        active,
+                        "transcript.partial",
+                        transcript_event.model_dump(mode="json"),
+                        observer=current_observer,
+                    )
+                    if not observed:
+                        return self._interrupted_result(active)
+                elif transcript_event.kind is TranscriptKind.FINAL:
+                    transcript = transcript_event.text.strip()
+
+            if not await self._emit_current(
+                runtime,
+                active,
+                "provider.stt.metrics",
+                {
+                    "duration_ns": time.perf_counter_ns() - stt_started_ns,
+                    "model": "small",
+                    "device": "cpu",
+                },
+                observer=current_observer,
+            ):
+                return self._interrupted_result(active)
+
+            if not transcript:
+                if not await self._emit_current(
+                    runtime,
+                    active,
+                    "transcript.empty",
+                    {"input_mode": "voice"},
+                    observer=current_observer,
+                ):
+                    return self._interrupted_result(active)
+                if not await self._emit_current(
+                    runtime,
+                    active,
+                    "turn.completed",
+                    {"delivery_mode": "text"},
+                    observer=current_observer,
+                ):
+                    return self._interrupted_result(active)
+                return TurnResult(
+                    session_id=session_id,
+                    turn_id=turn.turn_id,
+                    trace_id=active.trace_id,
+                    status=TurnStatus.COMPLETED,
+                    response=None,
+                    delivery_mode="text",
+                )
+
+            return await self._process_active_turn(
+                runtime,
+                active,
+                transcript=transcript,
+                input_mode="voice",
+                visual_summary="",
+                observer=current_observer,
+            )
+        finally:
+            await self._finish_if_active(runtime, active)
+
+    async def _process_active_turn(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+        *,
+        transcript: str,
+        input_mode: Literal["typed_text", "voice"],
+        visual_summary: str,
+        observer: TurnObserver,
+    ) -> TurnResult:
+        turn = active.handle
         risk: RiskAssessment | None = None
         response: AgentResponse | None = None
         delivery_mode: Literal[
             "voice_avatar", "voice_text", "text", "interrupted"
         ] = "voice_avatar"
 
-        try:
+        if not await self._emit_current(
+            runtime,
+            active,
+            "transcript.final",
+            {"text": transcript, "input_mode": input_mode},
+            observer=observer,
+        ):
+            return self._interrupted_result(active)
+
+        effective_visual_summary = ""
+        camera_consent = await self.store.is_consent_granted(
+            turn.session_id,
+            ConsentKind.CAMERA.value,
+        )
+        if camera_consent:
             if not await self._emit_current(
                 runtime,
                 active,
-                "transcript.final",
-                {"text": transcript, "input_mode": "typed_text"},
+                "vision.burst.requested",
+                {"max_frames": 4, "retention": "in_memory_only"},
+                observer=observer,
             ):
                 return self._interrupted_result(active)
-
-            effective_visual_summary = ""
-            camera_consent = await self.store.is_consent_granted(
-                session_id,
-                ConsentKind.CAMERA.value,
-            )
-            if camera_consent:
+            try:
+                effective_visual_summary = await self._vision.observe(
+                    session_id=turn.session_id,
+                    turn=turn,
+                    supplied_summary=visual_summary,
+                )
+            except VisionUnavailable:
                 if not await self._emit_current(
                     runtime,
                     active,
-                    "vision.burst.requested",
-                    {"max_frames": 4, "retention": "in_memory_only"},
+                    "vision.degraded",
+                    {"fallback": "voice_text_avatar"},
+                    observer=observer,
                 ):
                     return self._interrupted_result(active)
-                try:
-                    effective_visual_summary = await self._vision.observe(
-                        session_id=session_id,
-                        turn=turn,
-                        supplied_summary=visual_summary,
-                    )
-                except VisionUnavailable:
+            else:
+                visual_emitted = await self._emit_visual_if_consented(
+                    runtime,
+                    active,
+                    {
+                        "summary": effective_visual_summary,
+                        "valid_for_ms": 10_000,
+                    },
+                    observer=observer,
+                )
+                if not visual_emitted and not await self._is_current(
+                    runtime,
+                    active,
+                ):
+                    return self._interrupted_result(active)
+                if not visual_emitted:
+                    effective_visual_summary = ""
                     if not await self._emit_current(
                         runtime,
                         active,
-                        "vision.degraded",
-                        {"fallback": "voice_text_avatar"},
+                        "vision.cancelled",
+                        {"reason": "camera_consent_revoked"},
+                        observer=observer,
                     ):
                         return self._interrupted_result(active)
-                else:
-                    visual_emitted = await self._emit_visual_if_consented(
-                        runtime,
-                        active,
-                        {
-                            "summary": effective_visual_summary,
-                            "valid_for_ms": 10_000,
-                        },
-                    )
-                    if not visual_emitted and not await self._is_current(
-                        runtime,
-                        active,
-                    ):
-                        return self._interrupted_result(active)
-                    if not visual_emitted:
-                        effective_visual_summary = ""
-                        if not await self._emit_current(
-                            runtime,
-                            active,
-                            "vision.cancelled",
-                            {"reason": "camera_consent_revoked"},
-                        ):
-                            return self._interrupted_result(active)
 
-            graph_result: dict[str, Any] = await self._graph.ainvoke(
-                {
-                    "transcript": transcript,
-                    "visual_summary": effective_visual_summary,
-                    "turn_id": turn.turn_id,
-                    "cancel_token": turn.cancel_token,
-                    "visited": [],
-                }
-            )
-            risk = cast(RiskAssessment, graph_result["risk"])
-            response = cast(AgentResponse, graph_result["response"])
-            if not await self._emit_current(
-                runtime,
-                active,
-                "risk.updated",
-                risk.model_dump(mode="json"),
+        graph_result: dict[str, Any] = await self._graph.ainvoke(
+            {
+                "transcript": transcript,
+                "visual_summary": effective_visual_summary,
+                "turn_id": turn.turn_id,
+                "cancel_token": turn.cancel_token,
+                "visited": [],
+            }
+        )
+        risk = cast(RiskAssessment, graph_result["risk"])
+        response = cast(AgentResponse, graph_result["response"])
+        raw_metrics = graph_result.get("provider_metrics", {})
+        agent_metrics: dict[str, object] = {}
+        if isinstance(raw_metrics, dict):
+            for key in (
+                "provider",
+                "total_duration_ns",
+                "load_duration_ns",
+                "prompt_eval_count",
+                "eval_count",
             ):
-                return self._interrupted_result(active, risk=risk, response=response)
-            if not await self._emit_current(
-                runtime,
-                active,
-                "retrieval.completed",
-                {
-                    "evidence_ids": response.evidence_ids,
-                    "reviewed_only": True,
-                },
-            ):
-                return self._interrupted_result(active, risk=risk, response=response)
-            if not await self._emit_current(
-                runtime,
-                active,
-                "assistant.response.ready",
-                response.model_dump(mode="json"),
-            ):
-                return self._interrupted_result(active, risk=risk, response=response)
+                value = raw_metrics.get(key)
+                if isinstance(value, str | int | float):
+                    agent_metrics[key] = value
+        if not await self._emit_current(
+            runtime,
+            active,
+            "provider.agent.metrics",
+            agent_metrics,
+            observer=observer,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
+        if not await self._emit_current(
+            runtime,
+            active,
+            "risk.updated",
+            risk.model_dump(mode="json"),
+            observer=observer,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
+        if not await self._emit_current(
+            runtime,
+            active,
+            "retrieval.completed",
+            {
+                "evidence_ids": response.evidence_ids,
+                "reviewed_only": True,
+            },
+            observer=observer,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
+        if not await self._emit_current(
+            runtime,
+            active,
+            "assistant.response.ready",
+            response.model_dump(mode="json"),
+            observer=observer,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
 
+        if not active.synthesize_audio:
+            delivery_mode = "text"
+            if not await self._emit_current(
+                runtime,
+                active,
+                "response.displayed",
+                {"text": response.display_text},
+                observer=observer,
+            ):
+                return self._interrupted_result(active, risk=risk, response=response)
+        else:
+            tts_started_ns = time.perf_counter_ns()
+            first_chunk_ns: int | None = None
+            audio_chunk_count = 0
             try:
-                audio_chunks = await self._audio.synthesize(
+                async for chunk in self._audio.synthesize(
                     response.spoken_text,
                     turn=turn,
-                )
-            except AudioUnavailable:
-                delivery_mode = "text"
-                if not await self._emit_current(
-                    runtime,
-                    active,
-                    "tts.degraded",
-                    {"fallback": "text"},
                 ):
-                    return self._interrupted_result(active, risk=risk, response=response)
-                if not await self._emit_current(
-                    runtime,
-                    active,
-                    "response.displayed",
-                    {"text": response.display_text},
-                ):
-                    return self._interrupted_result(active, risk=risk, response=response)
-            else:
-                for chunk in audio_chunks:
-                    if not await self._emit_current(
+                    if first_chunk_ns is None:
+                        first_chunk_ns = time.perf_counter_ns()
+                    emitted = await self._emit_current(
                         runtime,
                         active,
                         "tts.audio.chunk",
@@ -385,17 +533,71 @@ class SessionManager:
                             "pts_ms": chunk.pts_ms,
                             "duration_ms": chunk.duration_ms,
                         },
+                        observer=observer,
+                    )
+                    if not emitted:
+                        return self._interrupted_result(
+                            active,
+                            risk=risk,
+                            response=response,
+                        )
+                    if not await self._deliver_audio_current(
+                        runtime,
+                        active,
+                        chunk,
+                        observer=observer,
                     ):
                         return self._interrupted_result(
                             active,
                             risk=risk,
                             response=response,
                         )
+                    audio_chunk_count += 1
+            except AudioUnavailable:
+                delivery_mode = "text"
+                if not await self._emit_current(
+                    runtime,
+                    active,
+                    "tts.degraded",
+                    {"fallback": "text"},
+                    observer=observer,
+                ):
+                    return self._interrupted_result(active, risk=risk, response=response)
+                if not await self._emit_current(
+                    runtime,
+                    active,
+                    "response.displayed",
+                    {"text": response.display_text},
+                    observer=observer,
+                ):
+                    return self._interrupted_result(active, risk=risk, response=response)
+            else:
+                if not await self._emit_current(
+                    runtime,
+                    active,
+                    "provider.tts.metrics",
+                    {
+                        "first_chunk_duration_ns": (
+                            0
+                            if first_chunk_ns is None
+                            else first_chunk_ns - tts_started_ns
+                        ),
+                        "total_duration_ns": time.perf_counter_ns()
+                        - tts_started_ns,
+                        "chunk_count": audio_chunk_count,
+                    },
+                    observer=observer,
+                ):
+                    return self._interrupted_result(
+                        active,
+                        risk=risk,
+                        response=response,
+                    )
                 try:
                     avatar_result = await self._avatar.render(
                         turn,
                         style=response.avatar_style,
-                        audio_chunk_count=len(audio_chunks),
+                        audio_chunk_count=audio_chunk_count,
                     )
                 except AvatarUnavailable:
                     delivery_mode = "voice_text"
@@ -404,6 +606,7 @@ class SessionManager:
                         active,
                         "avatar.degraded",
                         {"fallback": "voice_text"},
+                        observer=observer,
                     ):
                         return self._interrupted_result(
                             active,
@@ -417,6 +620,7 @@ class SessionManager:
                             active,
                             "avatar.frame.ready",
                             {"frame_id": frame_id, "track": "avatar-video"},
+                            observer=observer,
                         ):
                             return self._interrupted_result(
                                 active,
@@ -428,6 +632,7 @@ class SessionManager:
                     active,
                     "playback.started",
                     {"delivery_mode": delivery_mode},
+                    observer=observer,
                 ):
                     return self._interrupted_result(
                         active,
@@ -435,24 +640,23 @@ class SessionManager:
                         response=response,
                     )
 
-            if not await self._emit_current(
-                runtime,
-                active,
-                "turn.completed",
-                {"delivery_mode": delivery_mode},
-            ):
-                return self._interrupted_result(active, risk=risk, response=response)
-            return TurnResult(
-                session_id=session_id,
-                turn_id=turn.turn_id,
-                trace_id=trace_id,
-                status=TurnStatus.COMPLETED,
-                risk_level=risk.level,
-                response=response,
-                delivery_mode=delivery_mode,
-            )
-        finally:
-            await self._finish_if_active(runtime, active)
+        if not await self._emit_current(
+            runtime,
+            active,
+            "turn.completed",
+            {"delivery_mode": delivery_mode},
+            observer=observer,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
+        return TurnResult(
+            session_id=turn.session_id,
+            turn_id=turn.turn_id,
+            trace_id=active.trace_id,
+            status=TurnStatus.COMPLETED,
+            risk_level=risk.level,
+            response=response,
+            delivery_mode=delivery_mode,
+        )
 
     async def interrupt(
         self,
@@ -520,7 +724,12 @@ class SessionManager:
             raise SessionNotFoundError(session_id)
         return runtime
 
-    async def _begin_turn(self, runtime: SessionRuntime) -> ActiveTurn:
+    async def _begin_turn(
+        self,
+        runtime: SessionRuntime,
+        *,
+        synthesize_audio: bool = True,
+    ) -> ActiveTurn:
         async with runtime.event_lock:
             if runtime.descriptor.status is SessionStatus.ENDED:
                 raise SessionEndedError(runtime.descriptor.session_id)
@@ -532,6 +741,7 @@ class SessionManager:
             active = ActiveTurn(
                 handle=handle,
                 trace_id=f"trace_{uuid4().hex}",
+                synthesize_audio=synthesize_audio,
             )
             runtime.active_turn = active
             return active
@@ -542,6 +752,8 @@ class SessionManager:
         active: ActiveTurn,
         event_type: str,
         payload: dict[str, object],
+        *,
+        observer: TurnObserver,
     ) -> bool:
         async with runtime.event_lock:
             if runtime.active_turn is not active:
@@ -559,6 +771,51 @@ class SessionManager:
                 event_type=event_type,
                 payload=payload,
             )
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            await observer.on_event(active.handle, event_type, payload)
+            return True
+
+    async def _observe_current(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        observer: TurnObserver,
+    ) -> bool:
+        async with runtime.event_lock:
+            if runtime.active_turn is not active:
+                return False
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            await observer.on_event(active.handle, event_type, payload)
+            return True
+
+    async def _deliver_audio_current(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+        chunk: PcmChunk,
+        *,
+        observer: TurnObserver,
+    ) -> bool:
+        async with runtime.event_lock:
+            if runtime.active_turn is not active:
+                return False
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            await observer.on_audio(active.handle, chunk)
             return True
 
     async def _emit_visual_if_consented(
@@ -566,6 +823,8 @@ class SessionManager:
         runtime: SessionRuntime,
         active: ActiveTurn,
         payload: dict[str, object],
+        *,
+        observer: TurnObserver,
     ) -> bool:
         async with runtime.event_lock:
             if runtime.active_turn is not active:
@@ -584,7 +843,19 @@ class SessionManager:
                 event_type="vision.observation.ready",
                 payload=payload,
             )
-            return event is not None
+            if event is None:
+                return False
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            await observer.on_event(
+                active.handle,
+                "vision.observation.ready",
+                payload,
+            )
+            return True
 
     async def _is_current(
         self,

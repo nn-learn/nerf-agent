@@ -86,6 +86,7 @@ def create_sessions_router(manager: SessionManager) -> APIRouter:
                 session_id,
                 text=request.text,
                 visual_summary=request.visual_summary,
+                synthesize_audio=False,
             )
         except SessionNotFoundError as error:
             raise HTTPException(status_code=404, detail="session not found") from error

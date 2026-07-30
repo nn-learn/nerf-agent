@@ -86,10 +86,12 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "transcript.final",
         "vision.burst.requested",
         "vision.observation.ready",
+        "provider.agent.metrics",
         "risk.updated",
         "retrieval.completed",
         "assistant.response.ready",
         "tts.audio.chunk",
+        "provider.tts.metrics",
         "avatar.frame.ready",
         "playback.started",
         "turn.completed",
@@ -197,5 +199,6 @@ async def test_session_api_creates_turns_and_ends_cleanly(tmp_path) -> None:
     assert created.json()["provider_mode"] == "mock"
     assert turn.status_code == 200
     assert turn.json()["status"] == "completed"
+    assert turn.json()["delivery_mode"] == "text"
     assert inactive_interrupt.json()["interrupted"] is False
     assert ended.json()["status"] == "ended"
