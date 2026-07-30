@@ -196,6 +196,7 @@ export function useLiveKitMediaSession(
     pauseVision,
     toggleMicrophone,
     interrupt,
+    sendText: async () => undefined,
     hangUp,
   };
 }

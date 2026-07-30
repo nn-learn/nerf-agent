@@ -448,6 +448,55 @@ a:focus-visible {
   font-size: 12px;
 }
 
+.realtime-error {
+  margin: -8px 0 16px;
+  padding: 11px 12px;
+  color: #ffd0c8;
+  border: 1px solid rgba(239, 142, 124, 0.3);
+  border-radius: 11px;
+  background: rgba(239, 142, 124, 0.08);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.text-fallback {
+  margin: 0 0 20px;
+}
+
+.text-fallback label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.text-fallback > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.text-fallback input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: 0;
+  background: rgba(5, 18, 17, 0.45);
+}
+
+.text-fallback input:focus {
+  border-color: rgba(181, 241, 220, 0.48);
+}
+
+.text-fallback .button {
+  min-height: 40px;
+  padding-inline: 13px;
+  font-size: 11px;
+}
+
 .conversation-rail {
   display: grid;
   gap: 9px;

@@ -1,3 +1,5 @@
+import { LocalRealtimeClient } from "../realtime/LocalRealtimeClient";
+
 export interface LiveKitCredentials {
   server_url: string;
   room_name: string;
@@ -14,6 +16,17 @@ export interface SessionDescriptor {
 
 export interface SessionCreated extends SessionDescriptor {
   access_token: string;
+}
+
+export interface TurnResult {
+  status: "completed" | "interrupted";
+  risk_level?: string;
+  response?: {
+    spoken_text: string;
+    display_text: string;
+    support_mode: string;
+  };
+  delivery_mode: string;
 }
 
 export interface ClinicianKeyTurn {
@@ -95,6 +108,39 @@ export class PsyAvatarApi {
     return this.request<SessionDescriptor>(`/api/sessions/${sessionId}`, {
       method: "DELETE",
     });
+  }
+
+  createTextTurn(sessionId: string, text: string): Promise<TurnResult> {
+    return this.request<TurnResult>(`/api/sessions/${sessionId}/turns`, {
+      method: "POST",
+      body: JSON.stringify({ text, visual_summary: "" }),
+    });
+  }
+
+  realtimeUrl(sessionId: string): string {
+    const url = new URL(this.baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = `/api/sessions/${sessionId}/realtime`;
+    url.search = "";
+    return url.toString();
+  }
+
+  createRealtimeClient(sessionId: string): LocalRealtimeClient;
+  createRealtimeClient<Client>(
+    sessionId: string,
+    factory: (url: string, accessToken: string) => Client,
+  ): Client;
+  createRealtimeClient<Client>(
+    sessionId: string,
+    factory: (url: string, accessToken: string) => Client = (
+      url,
+      accessToken,
+    ) => new LocalRealtimeClient(url, accessToken) as Client,
+  ): Client {
+    if (!this.accessToken) {
+      throw new Error("Create the session before realtime connection");
+    }
+    return factory(this.realtimeUrl(sessionId), this.accessToken);
   }
 
   async getLiveKitToken(

@@ -18,6 +18,7 @@ it("does not publish camera before explicit consent", async () => {
         pauseVision: vi.fn(),
         toggleMicrophone: vi.fn(),
         interrupt: vi.fn(),
+        sendText: vi.fn(),
         hangUp: vi.fn(),
       }}
     />,
@@ -49,6 +50,7 @@ it("keeps voice available when camera permission is denied", async () => {
         pauseVision: vi.fn(),
         toggleMicrophone: vi.fn(),
         interrupt: vi.fn(),
+        sendText: vi.fn(),
         hangUp: vi.fn(),
       }}
     />,
@@ -76,6 +78,7 @@ it("immediately removes the watching indicator when vision is paused", async () 
         pauseVision,
         toggleMicrophone: vi.fn(),
         interrupt: vi.fn(),
+        sendText: vi.fn(),
         hangUp: vi.fn(),
       }}
     />,
@@ -86,4 +89,114 @@ it("immediately removes the watching indicator when vision is paused", async () 
 
   expect(pauseVision).toHaveBeenCalledTimes(1);
   expect(await screen.findByText("视觉未开启")).toBeInTheDocument();
+});
+
+
+it("renders live user and assistant captions with the active speaker", () => {
+  const media = {
+    connectionState: "connected" as const,
+    microphoneEnabled: true,
+    visionState: "off" as const,
+    agentState: "listening" as const,
+    userCaption: "最近工作压力很大",
+    assistantCaption: "听起来你已经承受了一段时间。",
+    providerLabel: "本地 qwen3.6:latest",
+    publishCamera: vi.fn(),
+    pauseVision: vi.fn(),
+    toggleMicrophone: vi.fn(),
+    interrupt: vi.fn(),
+    sendText: vi.fn(),
+    hangUp: vi.fn(),
+  };
+  const { rerender } = render(<CallPage media={media} />);
+
+  expect(screen.getByText("你")).toBeInTheDocument();
+  expect(screen.getByText("最近工作压力很大")).toBeInTheDocument();
+  expect(screen.getByText("本地 qwen3.6:latest")).toBeInTheDocument();
+
+  rerender(
+    <CallPage
+      media={{
+        ...media,
+        agentState: "thinking",
+      }}
+    />,
+  );
+
+  expect(
+    screen.getByText("小澄", { selector: ".caption-speaker" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("听起来你已经承受了一段时间。")).toBeInTheDocument();
+});
+
+
+it("shows realtime errors as alerts without restoring the canned caption", () => {
+  render(
+    <CallPage
+      media={{
+        connectionState: "error",
+        microphoneEnabled: false,
+        visionState: "off",
+        agentState: "listening",
+        errorMessage:
+          "语音连接出现问题，请检查本地服务后重试，或使用下方文字输入继续。",
+        publishCamera: vi.fn(),
+        pauseVision: vi.fn(),
+        toggleMicrophone: vi.fn(),
+        interrupt: vi.fn(),
+        sendText: vi.fn(),
+        hangUp: vi.fn(),
+      }}
+    />,
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent("使用下方文字输入");
+  expect(
+    screen.queryByText(
+      "我在这里。你可以慢慢说，我们先从此刻最困扰你的事情开始。",
+    ),
+  ).not.toBeInTheDocument();
+});
+
+
+it("submits a nonblank text fallback and disables it while thinking", async () => {
+  const user = userEvent.setup();
+  const sendText = vi.fn().mockResolvedValue(undefined);
+  const media = {
+    connectionState: "connected" as const,
+    microphoneEnabled: false,
+    visionState: "off" as const,
+    agentState: "listening" as const,
+    publishCamera: vi.fn(),
+    pauseVision: vi.fn(),
+    toggleMicrophone: vi.fn(),
+    interrupt: vi.fn(),
+    sendText,
+    hangUp: vi.fn(),
+  };
+  const { rerender } = render(<CallPage media={media} />);
+  const input = screen.getByRole("textbox", {
+    name: "语音不可用时输入文字",
+  });
+  const submit = screen.getByRole("button", { name: "发送文字" });
+
+  expect(submit).toBeDisabled();
+  await user.type(input, "最近睡不好");
+  expect(submit).toBeEnabled();
+  await user.click(submit);
+
+  expect(sendText).toHaveBeenCalledWith("最近睡不好");
+
+  rerender(
+    <CallPage
+      media={{
+        ...media,
+        agentState: "thinking",
+      }}
+    />,
+  );
+  expect(screen.getByRole("textbox", {
+    name: "语音不可用时输入文字",
+  })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "回应中…" })).toBeDisabled();
 });

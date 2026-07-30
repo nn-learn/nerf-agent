@@ -24,10 +24,14 @@ export interface MediaSessionController {
   localCameraTrack?: LocalVideoTrack;
   localPreviewStream?: MediaStream;
   errorMessage?: string;
+  userCaption?: string;
+  assistantCaption?: string;
+  providerLabel?: string;
   publishCamera: () => Promise<void>;
   pauseVision: () => Promise<void>;
   toggleMicrophone: () => Promise<void>;
   interrupt: () => Promise<void>;
+  sendText: (text: string) => Promise<void>;
   hangUp: () => Promise<void>;
 }
 
@@ -114,6 +118,7 @@ export function useMockMediaSession(): MediaSessionController {
     pauseVision,
     toggleMicrophone: async () => setMicrophoneEnabled((enabled) => !enabled),
     interrupt,
+    sendText: async () => undefined,
     hangUp,
   };
 }

@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   BookOpenText,
   BrainCircuit,
@@ -148,9 +153,20 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
   const [consentBusy, setConsentBusy] = useState(false);
   const [consentError, setConsentError] = useState<string>();
   const [visionOverride, setVisionOverride] = useState<boolean | null>(null);
+  const [textInput, setTextInput] = useState("");
+  const [textBusy, setTextBusy] = useState(false);
   const cameraActive =
     visionOverride ?? media.visionState === "active";
   const callEnded = media.connectionState === "disconnected";
+  const textThinking = media.agentState === "thinking";
+  const userIsSpeaking =
+    media.agentState === "listening" && Boolean(media.userCaption);
+  const captionText = userIsSpeaking
+    ? media.userCaption
+    : media.assistantCaption ??
+      (media.errorMessage
+        ? "语音暂时不可用，你可以使用文字输入继续。"
+        : "我在这里。你可以慢慢说，我们先从此刻最困扰你的事情开始。");
 
   const confirmCamera = async () => {
     setConsentBusy(true);
@@ -175,6 +191,19 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
     setVisionOverride(false);
   };
 
+  const submitText = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const text = textInput.trim();
+    if (!text || textBusy || textThinking) return;
+    setTextBusy(true);
+    try {
+      await media.sendText(text);
+      setTextInput("");
+    } finally {
+      setTextBusy(false);
+    }
+  };
+
   return (
     <main className="call-page">
       <header className="app-header">
@@ -188,7 +217,11 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
           </span>
         </a>
         <div className="header-meta">
-          {demoMode && <span className="demo-chip">LOCAL DEMO</span>}
+          {(media.providerLabel || demoMode) && (
+            <span className="demo-chip">
+              {media.providerLabel ?? "LOCAL DEMO"}
+            </span>
+          )}
           <span className="session-clock">
             <Clock3 aria-hidden="true" size={15} />
             12:08
@@ -237,10 +270,10 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
           )}
 
           <div className="live-caption" aria-live="polite">
-            <span className="caption-speaker">小澄</span>
-            <p>
-              我在这里。你可以慢慢说，我们先从此刻最困扰你的事情开始。
-            </p>
+            <span className="caption-speaker">
+              {userIsSpeaking ? "你" : "小澄"}
+            </span>
+            <p>{captionText}</p>
           </div>
 
           {callEnded && (
@@ -270,6 +303,44 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
           <p className="panel-intro">
             这是一段由 AI 提供的非诊断性心理支持。你决定说什么、展示什么，以及何时停止。
           </p>
+
+          {media.errorMessage && (
+            <div className="realtime-error" role="alert">
+              {media.errorMessage}
+            </div>
+          )}
+
+          <form
+            className="text-fallback"
+            onSubmit={(event) => void submitText(event)}
+          >
+            <label htmlFor="text-fallback-input">
+              语音不可用时输入文字
+            </label>
+            <div>
+              <input
+                disabled={callEnded || textBusy || textThinking}
+                id="text-fallback-input"
+                maxLength={8000}
+                onChange={(event) => setTextInput(event.target.value)}
+                placeholder="写下此刻最想说的事"
+                type="text"
+                value={textInput}
+              />
+              <button
+                className="button button-primary"
+                disabled={
+                  callEnded ||
+                  textBusy ||
+                  textThinking ||
+                  !textInput.trim()
+                }
+                type="submit"
+              >
+                {textThinking || textBusy ? "回应中…" : "发送文字"}
+              </button>
+            </div>
+          </form>
 
           <div className="conversation-rail">
             <article className="rail-card is-current">
