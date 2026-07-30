@@ -23,8 +23,18 @@ if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
 
 Push-Location $serviceRoot
 try {
-    & $venvPython -m pip install -e ".[dev]"
+    & $venvPython -m pip install -e ".[dev,speech,rag]"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Orchestrator dependency installation failed"
+    }
+    & $venvPython -c "import edge_tts, faster_whisper, sentence_transformers, webrtcvad"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Speech/RAG dependency import check failed"
+    }
     & $venvPython -m pytest tests -q
+    if ($LASTEXITCODE -ne 0) {
+        throw "Orchestrator tests failed"
+    }
 }
 finally {
     Pop-Location

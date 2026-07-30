@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("mock", "real")]
+    [ValidateSet("mock", "local", "real")]
     [string]$ProviderMode = "mock"
 )
 
@@ -32,15 +32,117 @@ function Start-HiddenDemoProcess {
     return [System.Diagnostics.Process]::Start($startInfo)
 }
 
-function Wait-Http {
+function Get-HttpStatusCode {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+    $response = $ErrorRecord.Exception.Response
+    if ($null -eq $response) {
+        return $null
+    }
+    try {
+        return [int]$response.StatusCode
+    } catch {
+        return $null
+    }
+}
+
+function Get-HttpErrorPayload {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+    $body = $ErrorRecord.ErrorDetails.Message
+    if (-not [string]::IsNullOrWhiteSpace($body)) {
+        try {
+            return $body | ConvertFrom-Json
+        } catch {
+        }
+    }
+
+    $response = $ErrorRecord.Exception.Response
+    if ($null -eq $response) {
+        return $null
+    }
+    try {
+        if ($null -ne $response.Content) {
+            $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        } elseif ($response -is [System.Net.HttpWebResponse]) {
+            $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+            try {
+                $body = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($body)) {
+            return $body | ConvertFrom-Json
+        }
+    } catch {
+    }
+    return $null
+}
+
+function Wait-OrchestratorReady {
+    param(
+        [string]$Url,
+        [string]$Mode
+    )
+    $timeoutSeconds = if ($Mode -eq "local") { 240 } else { 20 }
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    $attempt = 0
+    $lastState = "service is not accepting connections"
+
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $attempt += 1
+        try {
+            $payload = Invoke-RestMethod -Uri $Url -TimeoutSec 2
+        } catch {
+            $statusCode = Get-HttpStatusCode $_
+            if ($null -eq $statusCode) {
+                $lastState = "service is not accepting connections"
+                Start-Sleep -Milliseconds 500
+                continue
+            }
+
+            $errorPayload = Get-HttpErrorPayload $_
+            $reason = if ($null -ne $errorPayload) { [string]$errorPayload.reason } else { "" }
+            if ($statusCode -eq 503 -and $Mode -eq "local" -and $reason -eq "OLLAMA_WARMING") {
+                $lastState = "OLLAMA_WARMING"
+                if ($attempt -eq 1 -or $attempt % 10 -eq 0) {
+                    Write-Host "Ollama model is warming; waiting up to 240 seconds..."
+                }
+                Start-Sleep -Milliseconds 500
+                continue
+            }
+
+            $reasonDetail = if ([string]::IsNullOrWhiteSpace($reason)) { "no reason supplied" } else { $reason }
+            throw "Orchestrator readiness failed: HTTP $statusCode ($reasonDetail)"
+        }
+
+        if ($payload.status -ne "ready") {
+            throw "Orchestrator readiness returned unexpected status: $($payload.status)"
+        }
+        if ($Mode -eq "local") {
+            if ($payload.provider_mode -ne "local" -or $payload.providers.ollama.ready -ne $true) {
+                throw "Orchestrator readiness did not confirm the local Ollama provider"
+            }
+        }
+        return
+    }
+
+    throw "Timed out after $timeoutSeconds seconds waiting for $Url ($lastState)"
+}
+
+function Wait-HttpSuccess {
     param([string]$Url)
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         try {
             $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 2
-            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
                 return
             }
+            throw "HTTP $($response.StatusCode)"
         } catch {
+            $statusCode = Get-HttpStatusCode $_
+            if ($null -ne $statusCode) {
+                throw "HTTP endpoint failed: $Url returned $statusCode"
+            }
         }
         Start-Sleep -Milliseconds 500
     }
@@ -67,7 +169,11 @@ $previousProviderMode = $env:PSYAVATAR_PROVIDER_MODE
 $previousMediaMode = $env:VITE_MEDIA_MODE
 try {
     $env:PSYAVATAR_PROVIDER_MODE = $ProviderMode
-    $env:VITE_MEDIA_MODE = $(if ($ProviderMode -eq "real") { "livekit" } else { "mock" })
+    $env:VITE_MEDIA_MODE = switch ($ProviderMode) {
+        "real" { "livekit" }
+        "local" { "local" }
+        default { "mock" }
+    }
     $orchestrator = Start-HiddenDemoProcess `
         -FilePath $python `
         -Arguments "-m uvicorn app.main:app --host 127.0.0.1 --port 8000" `
@@ -84,8 +190,8 @@ try {
 }
 
 try {
-    Wait-Http "http://127.0.0.1:8000/health/ready"
-    Wait-Http "http://127.0.0.1:5173/"
+    Wait-OrchestratorReady -Url "http://127.0.0.1:8000/health/ready" -Mode $ProviderMode
+    Wait-HttpSuccess "http://127.0.0.1:5173/"
 } catch {
     foreach ($process in $started) {
         Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
@@ -98,7 +204,7 @@ $started |
     ConvertTo-Json |
     Set-Content -Encoding utf8 (Join-Path $runtimeRoot "demo-processes.json")
 
-Write-Host "PsyAvatar Care demo is ready."
+Write-Host "PsyAvatar Care demo is ready in $ProviderMode mode."
 Write-Host "User call:       http://127.0.0.1:5173/"
 Write-Host "API docs:        http://127.0.0.1:8000/docs"
 Write-Host "Clinician view:  http://127.0.0.1:5173/?view=clinician&session=<session_id>"

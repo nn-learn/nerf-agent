@@ -8,7 +8,7 @@
 
 - `agent-mind/` 的 Java Agent 没有继续充当主编排核心。其 Agent、记忆、MCP、RAG 概念被重新设计为 Python 3.12 中的显式状态图、类型化工具、评审知识库和追加式事件协议。
 - `RAD-NeRF/RAD-NeRF/` 保持只读，保留原 person 222、Wav2Vec 和 RAD-NeRF 资产；通过独立 Python 3.10 worker 与 gRPC 契约接入。
-- 原模型选择保持：`faster-whisper small + qwen-max + Edge TTS Xiaoxiao + BGE-M3 + Wav2Vec/RAD-NeRF`。默认 mock 只替换运行时调用，不替换接口与工程边界。
+- 原有语音、检索和数字人模型选择保持：`faster-whisper small（CPU INT8）+ Edge TTS Xiaoxiao + BGE-M3/BM25 + Wav2Vec/RAD-NeRF`。本地模式只把文本 Agent 切换为 Ollama 中的 `qwen3.6:latest`；云端 Qwen-Max 与 GPU 数字人仍是需要显式配置的独立边界。
 
 完整分层与回合事件顺序见 [docs/architecture.md](docs/architecture.md)。
 
@@ -27,7 +27,44 @@
 - 脱敏人工接管台：风险原因、关键短摘录、不可变时间线
 - 固定风险/视觉/隐私评测；SQLite 拒绝持久化原始媒体
 
-## 最快演示（无 GPU）
+## 本地实时语音 Agent（推荐，无 GPU）
+
+本地模式保留原 faster-whisper、Edge TTS 和 BGE-M3 链路，用 Ollama
+`qwen3.6:latest` 驱动文本 Agent，并通过浏览器 PCM WebSocket 实时通话。它只启动
+FastAPI 与 Vite，不启动 Docker、LiveKit、Avatar Python 或 CUDA worker。
+
+首次准备：
+
+```powershell
+.\scripts\bootstrap.ps1 -PythonExe C:\Path\To\Python312\python.exe
+Set-Location apps\web
+npm install
+Set-Location ..\..
+ollama list
+```
+
+`ollama list` 必须包含精确名称 `qwen3.6:latest`。诊断、启动与真实文字回合 smoke：
+
+```powershell
+.\scripts\doctor.ps1 -ProviderMode local
+.\scripts\start-demo.ps1 -ProviderMode local
+.\scripts\smoke-local.ps1
+```
+
+本机的 `qwen3.6:latest` 约 23 GB，首次载入可能较慢；启动脚本只对
+`OLLAMA_WARMING` 等待最多 240 秒，其他 readiness 错误会立即显示。Edge TTS
+需要网络访问，BGE-M3 可能在第一次检索时下载模型。麦克风 PCM、合成音频、视频和
+摄像头帧只在内存中流转，不会写入事件库或日志。
+
+若用户明确选择更轻的实时模型，可在启动前设置：
+
+```powershell
+$env:PSYAVATAR_TEXT_MODEL="qwen:latest"
+```
+
+这只是显式、可见的用户选择；系统不会在 `qwen3.6:latest` 不可用时静默替换模型。
+
+## 最快 mock 演示（无 GPU）
 
 首次准备：
 
@@ -36,7 +73,7 @@ Set-Location apps\web
 npm install
 Set-Location ..\..\services\orchestrator
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,speech,rag]"
 Set-Location ..\..
 ```
 

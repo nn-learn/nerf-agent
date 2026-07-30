@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("mock", "real")]
+    [ValidateSet("mock", "local", "real")]
     [string]$ProviderMode = "mock"
 )
 
@@ -36,12 +36,16 @@ if (Test-Path -LiteralPath $orchestratorPython) {
     Write-Check "Orchestrator Python" "FAIL" "services/orchestrator/.venv is missing"
 }
 
-if (Test-Path -LiteralPath $avatarPython) {
-    $avatarVersion = (& $avatarPython --version 2>&1 | Select-Object -First 1)
-    $avatarOk = "$avatarVersion" -match "Python 3\.10\."
-    Write-Check "Avatar Python" $(if ($avatarOk) { "PASS" } else { "FAIL" }) "$avatarVersion" ($ProviderMode -eq "real")
+if ($ProviderMode -eq "real") {
+    if (Test-Path -LiteralPath $avatarPython) {
+        $avatarVersion = (& $avatarPython --version 2>&1 | Select-Object -First 1)
+        $avatarOk = "$avatarVersion" -match "Python 3\.10\."
+        Write-Check "Avatar Python" $(if ($avatarOk) { "PASS" } else { "FAIL" }) "$avatarVersion"
+    } else {
+        Write-Check "Avatar Python" "FAIL" "Python 3.10 worker environment is missing"
+    }
 } else {
-    Write-Check "Avatar Python" $(if ($ProviderMode -eq "real") { "FAIL" } else { "SKIP" }) "Python 3.10 worker environment is optional in mock mode" ($ProviderMode -eq "real")
+    Write-Check "Avatar Python" "SKIP" "not used by $ProviderMode mode"
 }
 
 $node = Get-Command node -ErrorAction SilentlyContinue
@@ -50,10 +54,11 @@ Write-Check "Node.js" $(if ($node) { "PASS" } else { "FAIL" }) $(if ($node) { (&
 Write-Check "npm" $(if ($npm) { "PASS" } else { "FAIL" }) $(if ($npm) { (& $npm.Source --version) } else { "npm.cmd not found" })
 
 $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
-Write-Check "FFmpeg" $(if ($ffmpeg) { "PASS" } elseif ($ProviderMode -eq "real") { "FAIL" } else { "SKIP" }) $(if ($ffmpeg) { "available for Edge TTS PCM conversion" } else { "optional in mock mode" }) ($ProviderMode -eq "real")
+$ffmpegRequired = $ProviderMode -in @("local", "real")
+Write-Check "FFmpeg" $(if ($ffmpeg) { "PASS" } elseif ($ffmpegRequired) { "FAIL" } else { "SKIP" }) $(if ($ffmpeg) { "available for Edge TTS PCM conversion" } elseif ($ffmpegRequired) { "required for Edge TTS PCM conversion" } else { "not used by mock mode" }) $ffmpegRequired
 
-$docker = Get-Command docker -ErrorAction SilentlyContinue
 if ($ProviderMode -eq "real") {
+    $docker = Get-Command docker -ErrorAction SilentlyContinue
     if ($docker) {
         & $docker.Source info *> $null
         Write-Check "Docker / LiveKit" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "Docker daemon must be ready for local LiveKit"
@@ -61,33 +66,87 @@ if ($ProviderMode -eq "real") {
         Write-Check "Docker / LiveKit" "FAIL" "docker not found"
     }
 } else {
-    Write-Check "Docker / LiveKit" "SKIP" "not required by the zero-GPU mock call"
+    Write-Check "Docker / LiveKit" "SKIP" "not used by $ProviderMode mode"
 }
 
-if ($legacyRoot) {
-    $personData = Join-Path $legacyRoot.Path "data\222"
-    $headCheckpoint = Join-Path $legacyRoot.Path "trial_222\checkpoints\ngp.pth"
-    $torsoCheckpoint = Join-Path $legacyRoot.Path "trial_222_torso\checkpoints\ngp.pth"
-    $assetsReady = (Test-Path -LiteralPath $personData) -and
-        (Test-Path -LiteralPath $headCheckpoint) -and
-        (Test-Path -LiteralPath $torsoCheckpoint)
-    Write-Check "Person 222 assets" $(if ($assetsReady) { "PASS" } else { "FAIL" }) "read-only data plus head/torso checkpoints" ($ProviderMode -eq "real")
-} else {
-    Write-Check "Person 222 assets" $(if ($ProviderMode -eq "real") { "FAIL" } else { "WARN" }) "legacy RAD-NeRF source not found" ($ProviderMode -eq "real")
-}
-
-$gpuTool = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if ($ProviderMode -eq "real") {
+    if ($legacyRoot) {
+        $personData = Join-Path $legacyRoot.Path "data\222"
+        $headCheckpoint = Join-Path $legacyRoot.Path "trial_222\checkpoints\ngp.pth"
+        $torsoCheckpoint = Join-Path $legacyRoot.Path "trial_222_torso\checkpoints\ngp.pth"
+        $assetsReady = (Test-Path -LiteralPath $personData) -and
+            (Test-Path -LiteralPath $headCheckpoint) -and
+            (Test-Path -LiteralPath $torsoCheckpoint)
+        Write-Check "Person 222 assets" $(if ($assetsReady) { "PASS" } else { "FAIL" }) "read-only data plus head/torso checkpoints"
+    } else {
+        Write-Check "Person 222 assets" "FAIL" "legacy RAD-NeRF source not found"
+    }
+} else {
+    Write-Check "Person 222 assets" "SKIP" "not used by $ProviderMode mode"
+}
+
+if ($ProviderMode -eq "real") {
+    $gpuTool = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     Write-Check "CUDA GPU" $(if ($gpuTool) { "PASS" } else { "FAIL" }) $(if ($gpuTool) { "nvidia-smi is available; run the explicit GPU smoke separately" } else { "NVIDIA runtime not found" })
 } else {
-    Write-Check "CUDA GPU" "SKIP" "the approved baseline requires no GPU"
+    Write-Check "CUDA GPU" "SKIP" "not used by $ProviderMode mode"
 }
 
-$qwenConfigured = -not [string]::IsNullOrWhiteSpace($env:PSYAVATAR_DASHSCOPE_API_KEY)
-Write-Check "Qwen credentials" $(if ($ProviderMode -eq "mock") { "SKIP" } elseif ($qwenConfigured) { "PASS" } else { "FAIL" }) $(if ($ProviderMode -eq "mock") { "mock provider selected" } elseif ($qwenConfigured) { "credential is present" } else { "PSYAVATAR_DASHSCOPE_API_KEY is missing" }) ($ProviderMode -eq "real")
+if ($ProviderMode -eq "real") {
+    $qwenConfigured = -not [string]::IsNullOrWhiteSpace($env:PSYAVATAR_DASHSCOPE_API_KEY)
+    Write-Check "Qwen credentials" $(if ($qwenConfigured) { "PASS" } else { "FAIL" }) $(if ($qwenConfigured) { "credential is present" } else { "PSYAVATAR_DASHSCOPE_API_KEY is missing" })
+} else {
+    Write-Check "Qwen credentials" "SKIP" "not used by $ProviderMode mode"
+}
+
+if ($ProviderMode -eq "local") {
+    $ollamaBaseUrl = $env:PSYAVATAR_OLLAMA_BASE_URL
+    if ([string]::IsNullOrWhiteSpace($ollamaBaseUrl)) {
+        $ollamaBaseUrl = "http://127.0.0.1:11434"
+    }
+    $ollamaBaseUrl = $ollamaBaseUrl.TrimEnd("/")
+    $textModel = $env:PSYAVATAR_TEXT_MODEL
+    if ([string]::IsNullOrWhiteSpace($textModel)) {
+        $textModel = "qwen3.6:latest"
+    }
+
+    try {
+        $ollamaVersion = Invoke-RestMethod -Uri "$ollamaBaseUrl/api/version" -TimeoutSec 5
+        $versionValue = [string]$ollamaVersion.version
+        Write-Check "Ollama version" $(if ([string]::IsNullOrWhiteSpace($versionValue)) { "FAIL" } else { "PASS" }) $(if ([string]::IsNullOrWhiteSpace($versionValue)) { "version response is invalid" } else { "local service responded" })
+    } catch {
+        Write-Check "Ollama version" "FAIL" "local service is unavailable"
+    }
+
+    try {
+        $ollamaTags = Invoke-RestMethod -Uri "$ollamaBaseUrl/api/tags" -TimeoutSec 10
+        $modelInstalled = @($ollamaTags.models | Where-Object { $_.name -eq $textModel }).Count -gt 0
+        Write-Check "Ollama model" $(if ($modelInstalled) { "PASS" } else { "FAIL" }) $(if ($modelInstalled) { "exact model installed: $textModel" } else { "exact model missing: $textModel" })
+    } catch {
+        Write-Check "Ollama model" "FAIL" "could not query installed models"
+    }
+
+    if (Test-Path -LiteralPath $orchestratorPython) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "SilentlyContinue"
+            & $orchestratorPython -c "import edge_tts, faster_whisper, sentence_transformers, webrtcvad" *> $null
+            $importsReady = $LASTEXITCODE -eq 0
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        Write-Check "Speech / RAG imports" $(if ($importsReady) { "PASS" } else { "FAIL" }) $(if ($importsReady) { "faster-whisper, Edge TTS, WebRTC VAD and sentence-transformers import successfully" } else { "run scripts/bootstrap.ps1 to install the local extras" })
+    } else {
+        Write-Check "Speech / RAG imports" "FAIL" "orchestrator Python is unavailable"
+    }
+} else {
+    Write-Check "Ollama" "SKIP" "not used by $ProviderMode mode"
+    Write-Check "Speech / RAG imports" "SKIP" "not used by $ProviderMode mode"
+}
 
 $listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners().Port
-foreach ($port in 7880, 7881, 8000, 5173) {
+$ports = if ($ProviderMode -eq "real") { 7880, 7881, 8000, 5173 } else { 8000, 5173 }
+foreach ($port in $ports) {
     $inUse = $listeners -contains $port
     Write-Check "Port $port" $(if ($inUse) { "WARN" } else { "PASS" }) $(if ($inUse) { "already in use; this may be an existing demo service" } else { "available" }) $false
 }
