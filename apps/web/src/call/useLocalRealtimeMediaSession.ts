@@ -54,6 +54,20 @@ export interface LocalRealtimeMediaDependencies {
   createPlayback: (callbacks: PlaybackCallbacks) => PlaybackPort;
 }
 
+interface LocalMediaLifecycle {
+  readonly generation: number;
+  readonly sessionId: string;
+  readonly sessionPromise: Promise<SessionCreated>;
+  active: boolean;
+  voiceGeneration: number;
+  client?: RealtimeClientPort;
+  capture?: MicrophoneCapturePort;
+  playback?: PlaybackPort;
+  unsubscribe?: () => void;
+  voiceReleasePromise?: Promise<void>;
+  sessionReleasePromise?: Promise<void>;
+}
+
 function defaultDependencies(): LocalRealtimeMediaDependencies {
   const api = new PsyAvatarApi();
   return {
@@ -92,76 +106,164 @@ export function useLocalRealtimeMediaSession(
   const [providerLabel, setProviderLabel] = useState<string>();
   const [errorMessage, setErrorMessage] = useState<string>();
 
-  const clientRef = useRef<RealtimeClientPort | undefined>(undefined);
-  const captureRef = useRef<MicrophoneCapturePort | undefined>(undefined);
-  const playbackRef = useRef<PlaybackPort | undefined>(undefined);
-  const unsubscribeRef = useRef<(() => void) | undefined>(undefined);
+  const lifecycleRef = useRef<LocalMediaLifecycle | undefined>(
+    undefined,
+  );
   const sessionPromiseRef = useRef<
     Promise<SessionCreated> | undefined
   >(undefined);
   const sessionPromiseIdRef = useRef<string | undefined>(undefined);
   const lifecycleGenerationRef = useRef(0);
-  const shutdownPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const microphoneEnabledRef = useRef(false);
   const playbackActiveRef = useRef(false);
   const audioEndedRef = useRef(true);
   const textTurnPendingRef = useRef(false);
 
-  const shutdown = useCallback(
-    (updateState: boolean): Promise<void> => {
-      if (shutdownPromiseRef.current) {
-        return shutdownPromiseRef.current;
-      }
-      const capture = captureRef.current;
-      const playback = playbackRef.current;
-      const client = clientRef.current;
-      const unsubscribe = unsubscribeRef.current;
-      captureRef.current = undefined;
-      playbackRef.current = undefined;
-      clientRef.current = undefined;
-      unsubscribeRef.current = undefined;
-      microphoneEnabledRef.current = false;
+  const ownsLifecycle = useCallback(
+    (lifecycle: LocalMediaLifecycle): boolean =>
+      lifecycle.active &&
+      lifecycleRef.current === lifecycle &&
+      lifecycleGenerationRef.current === lifecycle.generation,
+    [],
+  );
 
-      const shuttingDown = (async () => {
-        try {
-          await capture?.stop();
-        } catch {
-          // Continue releasing the remaining session resources.
-        }
+  const ownsVoice = useCallback(
+    (
+      lifecycle: LocalMediaLifecycle,
+      voiceGeneration: number,
+    ): boolean =>
+      ownsLifecycle(lifecycle) &&
+      lifecycle.voiceGeneration === voiceGeneration,
+    [ownsLifecycle],
+  );
+
+  const invalidateLifecycle = useCallback(
+    (lifecycle: LocalMediaLifecycle): void => {
+      if (!lifecycle.active) return;
+      lifecycle.active = false;
+      lifecycle.voiceGeneration += 1;
+      lifecycleGenerationRef.current += 1;
+      if (lifecycleRef.current === lifecycle) {
+        lifecycleRef.current = undefined;
+      }
+    },
+    [],
+  );
+
+  const releaseVoice = useCallback(
+    (
+      lifecycle: LocalMediaLifecycle,
+      sendSessionEnd: boolean,
+    ): Promise<void> => {
+      if (lifecycle.voiceReleasePromise) {
+        return lifecycle.voiceReleasePromise;
+      }
+      lifecycle.voiceGeneration += 1;
+      const capture = lifecycle.capture;
+      const playback = lifecycle.playback;
+      const client = lifecycle.client;
+      const unsubscribe = lifecycle.unsubscribe;
+      lifecycle.capture = undefined;
+      lifecycle.playback = undefined;
+      lifecycle.client = undefined;
+      lifecycle.unsubscribe = undefined;
+      microphoneEnabledRef.current = false;
+      playbackActiveRef.current = false;
+      audioEndedRef.current = true;
+
+      unsubscribe?.();
+      let captureStop: Promise<void>;
+      try {
+        captureStop = capture?.stop() ?? Promise.resolve();
+      } catch {
+        captureStop = Promise.resolve();
+      }
+      try {
         playback?.cancel();
+      } catch {
+        // Continue releasing the remaining voice resources.
+      }
+      let playbackClose: Promise<void>;
+      try {
+        playbackClose = playback?.close() ?? Promise.resolve();
+      } catch {
+        playbackClose = Promise.resolve();
+      }
+      if (sendSessionEnd) {
         try {
-          await playback?.close();
+          client?.endSession();
         } catch {
-          // Continue closing the transport and audited session.
+          // The HTTP session end remains authoritative.
         }
-        client?.endSession();
+      }
+      try {
         client?.close();
-        unsubscribe?.();
-        const sessionPromise = sessionPromiseRef.current;
-        if (sessionPromise) {
-          try {
-            await sessionPromise;
-            await dependencies.api.endSession(sessionId);
-          } catch {
-            // A failed creation has no server session left to end.
-          }
-        }
-        if (updateState) {
-          setMicrophoneEnabled(false);
-          setConnectionState("disconnected");
-          setAgentState("disconnected");
+      } catch {
+        // The audited HTTP session is released separately.
+      }
+
+      const releasing = Promise.all([
+        captureStop.catch(() => undefined),
+        playbackClose.catch(() => undefined),
+      ]).then(() => undefined);
+      lifecycle.voiceReleasePromise = releasing;
+      return releasing;
+    },
+    [],
+  );
+
+  const releaseLifecycle = useCallback(
+    (
+      lifecycle: LocalMediaLifecycle,
+      updateState: boolean,
+    ): Promise<void> => {
+      if (lifecycle.sessionReleasePromise) {
+        return lifecycle.sessionReleasePromise;
+      }
+      invalidateLifecycle(lifecycle);
+      if (updateState) {
+        setMicrophoneEnabled(false);
+        setConnectionState("disconnected");
+        setAgentState("disconnected");
+      }
+      const voiceRelease = releaseVoice(lifecycle, true);
+      const releasing = (async () => {
+        await voiceRelease;
+        try {
+          await lifecycle.sessionPromise;
+          await dependencies.api.endSession(lifecycle.sessionId);
+        } catch {
+          // A failed creation has no server session left to end.
         }
       })();
-      shutdownPromiseRef.current = shuttingDown;
-      return shuttingDown;
+      lifecycle.sessionReleasePromise = releasing;
+      return releasing;
     },
-    [dependencies.api, sessionId, setAgentState],
+    [
+      dependencies.api,
+      invalidateLifecycle,
+      releaseVoice,
+      setAgentState,
+    ],
+  );
+
+  const handleVoiceLoss = useCallback(
+    (
+      lifecycle: LocalMediaLifecycle,
+      voiceGeneration: number,
+    ): void => {
+      if (!ownsVoice(lifecycle, voiceGeneration)) return;
+      setConnectionState("error");
+      setAgentState("listening");
+      setMicrophoneEnabled(false);
+      setErrorMessage(REALTIME_ERROR_MESSAGE);
+      void releaseVoice(lifecycle, false);
+    },
+    [ownsVoice, releaseVoice, setAgentState],
   );
 
   useEffect(() => {
     const generation = ++lifecycleGenerationRef.current;
-    let cancelled = false;
-    shutdownPromiseRef.current = undefined;
     setConnectionState("connecting");
     setAgentState("connecting");
     setErrorMessage(undefined);
@@ -175,29 +277,33 @@ export function useLocalRealtimeMediaSession(
         dependencies.api.createSession(sessionId);
     }
     const sessionPromise = sessionPromiseRef.current;
+    const lifecycle: LocalMediaLifecycle = {
+      generation,
+      sessionId,
+      sessionPromise,
+      active: true,
+      voiceGeneration: 0,
+    };
+    lifecycleRef.current = lifecycle;
 
     void (async () => {
       try {
         const session = await sessionPromise;
-        if (
-          cancelled ||
-          lifecycleGenerationRef.current !== generation
-        ) {
-          return;
-        }
+        if (!ownsLifecycle(lifecycle)) return;
         setProviderLabel(
           session.provider_mode === "local"
             ? "本地 Qwen3.6"
             : session.provider_mode,
         );
+        const voiceGeneration = lifecycle.voiceGeneration;
         const playback = dependencies.createPlayback({
           onPlaybackStarted: () => {
-            if (lifecycleGenerationRef.current !== generation) return;
+            if (!ownsVoice(lifecycle, voiceGeneration)) return;
             playbackActiveRef.current = true;
             setAgentState("speaking");
           },
           onPlaybackIdle: () => {
-            if (lifecycleGenerationRef.current !== generation) return;
+            if (!ownsVoice(lifecycle, voiceGeneration)) return;
             playbackActiveRef.current = false;
             if (audioEndedRef.current) {
               setAgentState("listening");
@@ -207,12 +313,12 @@ export function useLocalRealtimeMediaSession(
         const capture = dependencies.createCapture();
         const client =
           dependencies.api.createRealtimeClient(sessionId);
-        playbackRef.current = playback;
-        captureRef.current = capture;
-        clientRef.current = client;
+        lifecycle.playback = playback;
+        lifecycle.capture = capture;
+        lifecycle.client = client;
 
         const handleMessage = (message: ServerMessage) => {
-          if (lifecycleGenerationRef.current !== generation) return;
+          if (!ownsVoice(lifecycle, voiceGeneration)) return;
           switch (message.type) {
             case "session.ready":
               setConnectionState("connected");
@@ -281,58 +387,51 @@ export function useLocalRealtimeMediaSession(
         const handlers: RealtimeClientHandlers = {
           onMessage: handleMessage,
           onAudio: (frame) => {
-            if (lifecycleGenerationRef.current !== generation) return;
+            if (!ownsVoice(lifecycle, voiceGeneration)) return;
             playback.enqueue(frame);
           },
           onError: () => {
-            if (lifecycleGenerationRef.current !== generation) return;
-            setConnectionState("error");
-            setAgentState("disconnected");
-            setErrorMessage(REALTIME_ERROR_MESSAGE);
+            handleVoiceLoss(lifecycle, voiceGeneration);
           },
           onClose: () => {
-            if (lifecycleGenerationRef.current !== generation) return;
-            setConnectionState("disconnected");
-            setAgentState("disconnected");
-            setErrorMessage(REALTIME_ERROR_MESSAGE);
+            handleVoiceLoss(lifecycle, voiceGeneration);
           },
         };
-        unsubscribeRef.current = client.subscribe(handlers);
+        lifecycle.unsubscribe = client.subscribe(handlers);
         await client.connect();
-        if (
-          cancelled ||
-          lifecycleGenerationRef.current !== generation
-        ) {
-          return;
-        }
+        if (!ownsVoice(lifecycle, voiceGeneration)) return;
         setConnectionState("connected");
         setAgentState("listening");
       } catch {
-        if (
-          cancelled ||
-          lifecycleGenerationRef.current !== generation
-        ) {
-          return;
-        }
-        setConnectionState("error");
-        setAgentState("listening");
-        setErrorMessage(REALTIME_ERROR_MESSAGE);
+        if (!ownsLifecycle(lifecycle)) return;
+        handleVoiceLoss(lifecycle, lifecycle.voiceGeneration);
       }
     })();
 
     return () => {
-      cancelled = true;
+      invalidateLifecycle(lifecycle);
       queueMicrotask(() => {
-        if (lifecycleGenerationRef.current === generation) {
-          void shutdown(false);
+        const replacement = lifecycleRef.current;
+        if (
+          replacement?.active &&
+          replacement.sessionId === lifecycle.sessionId
+        ) {
+          void releaseVoice(lifecycle, false);
+          return;
         }
+        void releaseLifecycle(lifecycle, false);
       });
     };
   }, [
     dependencies,
+    handleVoiceLoss,
+    invalidateLifecycle,
+    ownsLifecycle,
+    ownsVoice,
+    releaseLifecycle,
+    releaseVoice,
     sessionId,
     setAgentState,
-    shutdown,
   ]);
 
   const publishCamera = useCallback(async () => {
@@ -347,8 +446,10 @@ export function useLocalRealtimeMediaSession(
   }, [setVisionState]);
 
   const toggleMicrophone = useCallback(async () => {
-    const client = clientRef.current;
-    const capture = captureRef.current;
+    const lifecycle = lifecycleRef.current;
+    const voiceGeneration = lifecycle?.voiceGeneration;
+    const client = lifecycle?.client;
+    const capture = lifecycle?.capture;
     if (!client || !capture || !client.isReady) {
       setErrorMessage(REALTIME_ERROR_MESSAGE);
       return;
@@ -357,6 +458,13 @@ export function useLocalRealtimeMediaSession(
       microphoneEnabledRef.current = false;
       setMicrophoneEnabled(false);
       await capture.stop();
+      if (
+        !lifecycle ||
+        voiceGeneration === undefined ||
+        !ownsVoice(lifecycle, voiceGeneration)
+      ) {
+        return;
+      }
       client.stopAudio();
       return;
     }
@@ -364,27 +472,50 @@ export function useLocalRealtimeMediaSession(
     client.startAudio();
     try {
       await capture.start((frame) => client.sendPcm(frame));
+      if (
+        !lifecycle ||
+        voiceGeneration === undefined ||
+        !ownsVoice(lifecycle, voiceGeneration)
+      ) {
+        return;
+      }
       microphoneEnabledRef.current = true;
       setMicrophoneEnabled(true);
     } catch {
+      if (
+        !lifecycle ||
+        voiceGeneration === undefined ||
+        !ownsVoice(lifecycle, voiceGeneration)
+      ) {
+        return;
+      }
       client.stopAudio();
       setErrorMessage(
         "未能开启麦克风，请检查浏览器权限，或使用下方文字输入继续。",
       );
     }
-  }, []);
+  }, [ownsVoice]);
 
   const interrupt = useCallback(async () => {
+    const lifecycle = lifecycleRef.current;
+    if (!lifecycle?.active) return;
     audioEndedRef.current = true;
-    playbackRef.current?.cancel();
-    clientRef.current?.interrupt("user_pressed_interrupt");
+    lifecycle.playback?.cancel();
+    lifecycle.client?.interrupt("user_pressed_interrupt");
     setAgentState("listening");
   }, [setAgentState]);
 
   const sendText = useCallback(
     async (text: string) => {
       const normalized = text.trim();
-      if (!normalized || textTurnPendingRef.current) return;
+      const lifecycle = lifecycleRef.current;
+      if (
+        !normalized ||
+        !lifecycle?.active ||
+        textTurnPendingRef.current
+      ) {
+        return;
+      }
       textTurnPendingRef.current = true;
       setErrorMessage(undefined);
       setUserCaption(normalized);
@@ -394,6 +525,7 @@ export function useLocalRealtimeMediaSession(
           sessionId,
           normalized,
         );
+        if (!ownsLifecycle(lifecycle)) return;
         const displayText = result.response?.display_text.trim();
         if (result.status === "completed" && displayText) {
           setAssistantCaption(displayText);
@@ -404,19 +536,31 @@ export function useLocalRealtimeMediaSession(
           throw new Error("Text turn returned no display response");
         }
       } catch {
+        if (!ownsLifecycle(lifecycle)) return;
         setAgentState("listening");
         setErrorMessage(TEXT_ERROR_MESSAGE);
       } finally {
         textTurnPendingRef.current = false;
       }
     },
-    [dependencies.api, sessionId, setAgentState],
+    [
+      dependencies.api,
+      ownsLifecycle,
+      sessionId,
+      setAgentState,
+    ],
   );
 
-  const hangUp = useCallback(
-    () => shutdown(true),
-    [shutdown],
-  );
+  const hangUp = useCallback(() => {
+    const lifecycle = lifecycleRef.current;
+    if (!lifecycle) {
+      setMicrophoneEnabled(false);
+      setConnectionState("disconnected");
+      setAgentState("disconnected");
+      return Promise.resolve();
+    }
+    return releaseLifecycle(lifecycle, true);
+  }, [releaseLifecycle, setAgentState]);
 
   return {
     connectionState,

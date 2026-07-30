@@ -159,6 +159,37 @@ it("shows realtime errors as alerts without restoring the canned caption", () =>
 });
 
 
+it("keeps text fallback usable during recoverable voice-channel loss", async () => {
+  const user = userEvent.setup();
+  const sendText = vi.fn().mockResolvedValue(undefined);
+  const { container } = render(
+    <CallPage
+      media={{
+        connectionState: "error",
+        microphoneEnabled: false,
+        visionState: "off",
+        agentState: "listening",
+        errorMessage: "Voice unavailable; continue with text.",
+        publishCamera: vi.fn(),
+        pauseVision: vi.fn(),
+        toggleMicrophone: vi.fn(),
+        interrupt: vi.fn(),
+        sendText,
+        hangUp: vi.fn(),
+      }}
+    />,
+  );
+
+  expect(container.querySelector(".ended-overlay")).not.toBeInTheDocument();
+  const input = screen.getByRole("textbox");
+  expect(input).toBeEnabled();
+  await user.type(input, "Please continue in text");
+  await user.click(screen.getByRole("button", { name: "发送文字" }));
+
+  expect(sendText).toHaveBeenCalledWith("Please continue in text");
+});
+
+
 it("submits a nonblank text fallback and disables it while thinking", async () => {
   const user = userEvent.setup();
   const sendText = vi.fn().mockResolvedValue(undefined);

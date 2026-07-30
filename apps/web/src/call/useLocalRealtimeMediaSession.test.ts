@@ -81,6 +81,7 @@ class FakeRealtimeClient {
   close = vi.fn(() => {
     this.order.push("socket.close");
     this.isReady = false;
+    this.connection.reject(new Error("socket closed"));
   });
 
   ready(): void {
@@ -103,25 +104,48 @@ class FakeRealtimeClient {
   emitError(error = new Error("socket failed")): void {
     this.handlers?.onError?.(error);
   }
+
+  emitClose(): void {
+    this.isReady = false;
+    this.handlers?.onClose?.({ code: 1006 } as CloseEvent);
+    this.connection.reject(new Error("socket closed unexpectedly"));
+  }
 }
 
 class FakeCapture {
   private frameHandler?: (frame: ArrayBuffer) => void;
+  private startBarrier?: Promise<void>;
+  private resolveStartBarrier?: () => void;
+  active = false;
 
   constructor(private readonly order: string[]) {}
 
   start = vi.fn(async (onFrame: (frame: ArrayBuffer) => void) => {
     this.order.push("microphone.start");
     this.frameHandler = onFrame;
+    await this.startBarrier;
+    this.active = true;
   });
 
   stop = vi.fn(async () => {
     this.order.push("microphone.stop");
+    await this.startBarrier;
+    this.active = false;
     this.frameHandler = undefined;
   });
 
   emit(frame: ArrayBuffer): void {
     this.frameHandler?.(frame);
+  }
+
+  deferStart(): void {
+    const barrier = deferred<void>();
+    this.startBarrier = barrier.promise;
+    this.resolveStartBarrier = barrier.resolve;
+  }
+
+  resolveStart(): void {
+    this.resolveStartBarrier?.();
   }
 }
 
@@ -320,7 +344,7 @@ describe("useLocalRealtimeMediaSession", () => {
     expect(result.current.errorMessage).toMatch(/文字输入/);
   });
 
-  it("leaves no stale speaking state after a realtime transport failure", async () => {
+  it("leaves no stale speaking state after a recoverable realtime transport failure", async () => {
     const { harness, result } = await renderConnected();
     act(() => harness.client.emitAudio(new ArrayBuffer(640)));
     expect(result.current.agentState).toBe("speaking");
@@ -328,7 +352,76 @@ describe("useLocalRealtimeMediaSession", () => {
     act(() => harness.client.emitError());
 
     expect(result.current.connectionState).toBe("error");
-    expect(result.current.agentState).toBe("disconnected");
+    expect(result.current.agentState).toBe("listening");
+  });
+
+  it("releases voice resources after an unexpected transport error without ending the audited session", async () => {
+    const { harness, result } = await renderConnected();
+    await act(async () => result.current.toggleMicrophone());
+    act(() => harness.client.emitAudio(new ArrayBuffer(640)));
+    harness.capture.stop.mockClear();
+    harness.playback.cancel.mockClear();
+    harness.client.close.mockClear();
+
+    act(() => harness.client.emitError());
+
+    expect(result.current.connectionState).toBe("error");
+    expect(result.current.agentState).toBe("listening");
+    expect(result.current.microphoneEnabled).toBe(false);
+    expect(harness.capture.stop).toHaveBeenCalledOnce();
+    expect(harness.playback.cancel).toHaveBeenCalledOnce();
+    expect(harness.client.close).toHaveBeenCalledOnce();
+    expect(harness.endSession).not.toHaveBeenCalled();
+  });
+
+  it("releases partial startup after an unexpected close without ending the audited session", async () => {
+    const harness = makeHarness();
+    const { result } = renderHook(() =>
+      useLocalRealtimeMediaSession(
+        SESSION.session_id,
+        harness.dependencies,
+      ),
+    );
+    await waitFor(() => expect(harness.client.connect).toHaveBeenCalledOnce());
+
+    act(() => harness.client.emitClose());
+
+    await waitFor(() => expect(harness.capture.stop).toHaveBeenCalledOnce());
+    expect(result.current.connectionState).toBe("error");
+    expect(result.current.agentState).toBe("listening");
+    expect(harness.playback.cancel).toHaveBeenCalledOnce();
+    expect(harness.client.close).toHaveBeenCalledOnce();
+    expect(harness.endSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps the HTTP text fallback active after the ready voice channel closes", async () => {
+    const harness = makeHarness();
+    harness.createTextTurn.mockResolvedValueOnce({
+      status: "completed",
+      risk_level: "GREEN",
+      response: {
+        spoken_text: "Text fallback response",
+        display_text: "Text fallback response",
+        support_mode: "listen",
+      },
+      delivery_mode: "text",
+    });
+    const { result } = await renderConnected(harness);
+
+    act(() => harness.client.emitClose());
+    await waitFor(() =>
+      expect(result.current.connectionState).toBe("error"),
+    );
+    await act(async () => result.current.sendText("  I still need support  "));
+
+    expect(harness.createTextTurn).toHaveBeenCalledWith(
+      SESSION.session_id,
+      "I still need support",
+    );
+    expect(result.current.assistantCaption).toBe("Text fallback response");
+    expect(result.current.connectionState).toBe("error");
+    expect(result.current.agentState).toBe("listening");
+    expect(harness.endSession).not.toHaveBeenCalled();
   });
 
   it("cancels playback before sending a barge-in interrupt", async () => {
@@ -362,6 +455,88 @@ describe("useLocalRealtimeMediaSession", () => {
     expect(harness.order.indexOf("microphone.stop")).toBeLessThan(
       harness.order.indexOf("socket.audio.stop"),
     );
+  });
+
+  it("invalidates a pending socket connection synchronously when hangup is not awaited", async () => {
+    const harness = makeHarness();
+    const { result } = renderHook(() =>
+      useLocalRealtimeMediaSession(
+        SESSION.session_id,
+        harness.dependencies,
+      ),
+    );
+    await waitFor(() => expect(harness.client.connect).toHaveBeenCalledOnce());
+
+    let hangingUp!: Promise<void>;
+    act(() => {
+      hangingUp = result.current.hangUp();
+    });
+
+    expect(result.current.connectionState).toBe("disconnected");
+    expect(result.current.agentState).toBe("disconnected");
+
+    act(() => harness.client.ready());
+    await act(async () => hangingUp);
+
+    expect(result.current.connectionState).toBe("disconnected");
+    expect(result.current.agentState).toBe("disconnected");
+    expect(harness.capture.stop).toHaveBeenCalledOnce();
+    expect(harness.playback.cancel).toHaveBeenCalledOnce();
+    expect(harness.client.close).toHaveBeenCalledOnce();
+    expect(harness.endSession).toHaveBeenCalledOnce();
+  });
+
+  it("does not publish delayed capture or text results after a non-awaited hangup", async () => {
+    const harness = makeHarness();
+    const textResult = deferred<TurnResult>();
+    harness.capture.deferStart();
+    harness.createTextTurn.mockReturnValueOnce(textResult.promise);
+    const { result } = await renderConnected(harness);
+
+    let startingMicrophone!: Promise<void>;
+    let sendingText!: Promise<void>;
+    act(() => {
+      startingMicrophone = result.current.toggleMicrophone();
+      sendingText = result.current.sendText("I need a moment");
+    });
+    expect(result.current.agentState).toBe("thinking");
+
+    let hangingUp!: Promise<void>;
+    act(() => {
+      hangingUp = result.current.hangUp();
+    });
+    expect(result.current.connectionState).toBe("disconnected");
+    expect(result.current.agentState).toBe("disconnected");
+
+    act(() => {
+      harness.capture.resolveStart();
+      textResult.resolve({
+        status: "completed",
+        risk_level: "GREEN",
+        response: {
+          spoken_text: "This result belongs to the ended lifecycle",
+          display_text: "This result belongs to the ended lifecycle",
+          support_mode: "listen",
+        },
+        delivery_mode: "text",
+      });
+    });
+    await act(async () => {
+      await Promise.all([
+        startingMicrophone,
+        sendingText,
+        hangingUp,
+      ]);
+    });
+
+    expect(result.current.connectionState).toBe("disconnected");
+    expect(result.current.agentState).toBe("disconnected");
+    expect(result.current.microphoneEnabled).toBe(false);
+    expect(result.current.assistantCaption).not.toBe(
+      "This result belongs to the ended lifecycle",
+    );
+    expect(harness.capture.active).toBe(false);
+    expect(harness.capture.stop).toHaveBeenCalledOnce();
   });
 
   it("hangs up all local resources once and ends the HTTP session", async () => {
@@ -423,6 +598,40 @@ describe("useLocalRealtimeMediaSession", () => {
     expect(harness.createTextTurn).toHaveBeenCalledOnce();
   });
 
+  it("ignores a delayed text result after non-awaited unmount while releasing owned resources", async () => {
+    const harness = makeHarness();
+    const textResult = deferred<TurnResult>();
+    harness.createTextTurn.mockReturnValueOnce(textResult.promise);
+    const { result, unmount } = await renderConnected(harness);
+
+    let sendingText!: Promise<void>;
+    act(() => {
+      sendingText = result.current.sendText("Pending text");
+    });
+    unmount();
+    useSessionStore.setState({ agentState: "speaking" });
+
+    act(() => {
+      textResult.resolve({
+        status: "completed",
+        risk_level: "GREEN",
+        response: {
+          spoken_text: "Stale unmounted response",
+          display_text: "Stale unmounted response",
+          support_mode: "listen",
+        },
+        delivery_mode: "text",
+      });
+    });
+    await act(async () => sendingText);
+
+    await waitFor(() => expect(harness.endSession).toHaveBeenCalledOnce());
+    expect(useSessionStore.getState().agentState).toBe("speaking");
+    expect(harness.capture.stop).toHaveBeenCalledOnce();
+    expect(harness.playback.cancel).toHaveBeenCalledOnce();
+    expect(harness.client.close).toHaveBeenCalledOnce();
+  });
+
   it("shares session startup through StrictMode replay and cleans up once", async () => {
     const harness = makeHarness();
     const creation = deferred<SessionCreated>();
@@ -445,8 +654,18 @@ describe("useLocalRealtimeMediaSession", () => {
     act(() => harness.client.ready());
 
     unmount();
+    useSessionStore.setState({ agentState: "speaking" });
+    act(() => {
+      harness.client.emitMessage({
+        type: "transcript.final",
+        text: "Stale StrictMode lifecycle",
+        input_mode: "voice",
+        turn_id: "turn_stale",
+      });
+    });
 
     await waitFor(() => expect(harness.endSession).toHaveBeenCalledOnce());
+    expect(useSessionStore.getState().agentState).toBe("speaking");
     expect(harness.client.close).toHaveBeenCalledOnce();
   });
 });
