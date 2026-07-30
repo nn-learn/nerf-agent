@@ -62,14 +62,7 @@ export class MicrophoneCapture {
   async stop(): Promise<void> {
     this.generation += 1;
     const startup = this.startPromise;
-    if (startup) {
-      try {
-        await startup;
-      } catch {
-        // Startup owns and releases any partially acquired resources.
-      }
-    }
-
+    this.startPromise = undefined;
     const resources = {
       context: this.context,
       stream: this.stream,
@@ -84,6 +77,14 @@ export class MicrophoneCapture {
     this.worklet = undefined;
     this.silentGain = undefined;
     this.resampler = undefined;
+
+    if (startup) {
+      try {
+        await startup;
+      } catch {
+        // Startup owns and releases any partially acquired resources.
+      }
+    }
     await this.release(resources);
   }
 

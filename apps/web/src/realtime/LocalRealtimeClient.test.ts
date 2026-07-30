@@ -236,9 +236,73 @@ describe("LocalRealtimeClient", () => {
     client.close();
   });
 
-  it("rejects and releases the socket when transport setup errors", async () => {
-    const { client, socket } = setupClient();
+  it("can retry after a pre-ready close and ignores stale socket handlers", async () => {
+    const firstSocket = new FakeWebSocket(
+      "ws://localhost/realtime",
+    );
+    const recoveredSocket = new FakeWebSocket(firstSocket.url);
+    const socketFactory = vi
+      .fn<(url: string) => WebSocket>()
+      .mockReturnValueOnce(firstSocket as unknown as WebSocket)
+      .mockReturnValueOnce(
+        recoveredSocket as unknown as WebSocket,
+      );
+    const client = new LocalRealtimeClient(
+      firstSocket.url,
+      "a".repeat(32),
+      socketFactory,
+    );
+    const firstConnection = client.connect();
+    firstSocket.open();
+    const staleMessageHandler = firstSocket.onmessage;
+
+    firstSocket.serverClose();
+    await expect(firstConnection).rejects.toThrow(
+      "Realtime connection closed before ready",
+    );
+
+    const recovered = client.connect();
+    void recovered.catch(() => undefined);
+    expect(socketFactory).toHaveBeenCalledTimes(2);
+    recoveredSocket.open();
+    const recoveredSettled = vi.fn();
+    void recovered.then(recoveredSettled);
+    staleMessageHandler?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "session.ready",
+          session_id: "stale_session",
+        }),
+      }),
+    );
+    await Promise.resolve();
+    expect(recoveredSettled).not.toHaveBeenCalled();
+
+    recoveredSocket.receiveJson({
+      type: "session.ready",
+      session_id: "recovered_session",
+    });
+    await expect(recovered).resolves.toBeUndefined();
+    client.close();
+    expect(recoveredSocket.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  it("retries after a pre-ready transport error with stale handlers detached", async () => {
+    const socket = new FakeWebSocket("ws://localhost/realtime");
+    const recoveredSocket = new FakeWebSocket(socket.url);
+    const socketFactory = vi
+      .fn<(url: string) => WebSocket>()
+      .mockReturnValueOnce(socket as unknown as WebSocket)
+      .mockReturnValueOnce(
+        recoveredSocket as unknown as WebSocket,
+      );
+    const client = new LocalRealtimeClient(
+      socket.url,
+      "a".repeat(32),
+      socketFactory,
+    );
     const connected = client.connect();
+    const staleMessageHandler = socket.onmessage;
 
     socket.fail();
 
@@ -248,9 +312,33 @@ describe("LocalRealtimeClient", () => {
     expect(socket.onmessage).toBeNull();
     expect(socket.onerror).toBeNull();
     expect(socket.onclose).toBeNull();
+
+    const recovered = client.connect();
+    expect(socketFactory).toHaveBeenCalledTimes(2);
+    recoveredSocket.open();
+    staleMessageHandler?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "session.ready",
+          session_id: "stale_session",
+        }),
+      }),
+    );
+    let recoveredSettled = false;
+    void recovered.then(() => {
+      recoveredSettled = true;
+    });
+    await Promise.resolve();
+    expect(recoveredSettled).toBe(false);
+    recoveredSocket.receiveJson({
+      type: "session.ready",
+      session_id: "recovered_session",
+    });
+    await expect(recovered).resolves.toBeUndefined();
+    client.close();
   });
 
-  it("cleans handlers and makes close idempotent", () => {
+  it("cleans handlers and makes explicit close terminal and idempotent", async () => {
     const { client, socket } = setupClient();
     void client.connect().catch(() => undefined);
     socket.open();
@@ -263,5 +351,8 @@ describe("LocalRealtimeClient", () => {
     expect(socket.onmessage).toBeNull();
     expect(socket.onerror).toBeNull();
     expect(socket.onclose).toBeNull();
+    await expect(client.connect()).rejects.toThrow(
+      "Realtime client is closed",
+    );
   });
 });

@@ -114,6 +114,95 @@ describe("MicrophoneCapture startup cleanup", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it("restarts independently while a stopped startup finishes later", async () => {
+    let resolveOldModule!: () => void;
+    let oldModuleStarted!: () => void;
+    const oldModulePending = new Promise<void>((resolve) => {
+      resolveOldModule = resolve;
+    });
+    const oldModuleReached = new Promise<void>((resolve) => {
+      oldModuleStarted = resolve;
+    });
+    const oldTrackStop = vi.fn();
+    const newTrackStop = vi.fn();
+    const getUserMedia = vi
+      .fn<(constraints: MediaStreamConstraints) => Promise<MediaStream>>()
+      .mockResolvedValueOnce({
+        getTracks: () => [{ stop: oldTrackStop }],
+      } as unknown as MediaStream)
+      .mockResolvedValueOnce({
+        getTracks: () => [{ stop: newTrackStop }],
+      } as unknown as MediaStream);
+    const oldClose = vi.fn(async () => undefined);
+    const newClose = vi.fn(async () => undefined);
+    const oldContext = {
+      sampleRate: 48_000,
+      audioWorklet: {
+        addModule: vi.fn(() => {
+          oldModuleStarted();
+          return oldModulePending;
+        }),
+      },
+      close: oldClose,
+    } as unknown as AudioContext;
+    const newSource = new FakeNode();
+    const newWorklet = new FakeWorkletNode();
+    const newGain = Object.assign(new FakeNode(), {
+      gain: { value: 1 },
+    });
+    const newContext = {
+      sampleRate: 48_000,
+      audioWorklet: {
+        addModule: vi.fn(async () => undefined),
+      },
+      destination: new FakeNode(),
+      createMediaStreamSource: vi.fn(() => newSource),
+      createGain: vi.fn(() => newGain),
+      close: newClose,
+    } as unknown as AudioContext;
+    const contextFactory = vi
+      .fn<() => AudioContext>()
+      .mockReturnValueOnce(oldContext)
+      .mockReturnValueOnce(newContext);
+    const capture = new MicrophoneCapture({
+      contextFactory,
+      getUserMedia,
+      workletFactory: () =>
+        newWorklet as unknown as AudioWorkletNode,
+    });
+    const restartedFrame = vi.fn();
+
+    const first = capture.start(vi.fn());
+    await oldModuleReached;
+    const stopping = capture.stop();
+    const restarted = capture.start(restartedFrame);
+
+    expect(restarted).not.toBe(first);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    await restarted;
+    newWorklet.port.onmessage?.(
+      new MessageEvent("message", {
+        data: new Float32Array(960).fill(0.5),
+      }),
+    );
+    expect(restartedFrame).toHaveBeenCalledOnce();
+
+    resolveOldModule();
+    await Promise.all([first, stopping]);
+    expect(oldTrackStop).toHaveBeenCalledOnce();
+    expect(oldClose).toHaveBeenCalledOnce();
+    expect(newTrackStop).not.toHaveBeenCalled();
+    expect(newClose).not.toHaveBeenCalled();
+
+    await capture.stop();
+    await capture.stop();
+    expect(newSource.disconnected).toBe(true);
+    expect(newWorklet.disconnected).toBe(true);
+    expect(newGain.disconnected).toBe(true);
+    expect(newTrackStop).toHaveBeenCalledOnce();
+    expect(newClose).toHaveBeenCalledOnce();
+  });
+
   it("stops acquired media if worklet setup fails", async () => {
     const stop = vi.fn();
     const context = {

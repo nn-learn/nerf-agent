@@ -93,12 +93,13 @@ export class LocalRealtimeClient {
       };
       socket.onclose = (event) => {
         if (this.socket !== socket) return;
+        const wasReady = this.ready;
         this.socket = undefined;
         this.ready = false;
         this.captureActive = false;
         this.activeStream = undefined;
         const wasClosedByClient = this.closed;
-        this.closed = true;
+        this.closed = wasClosedByClient || wasReady;
         this.detachSocket(socket);
         if (!wasClosedByClient) {
           const error = new Error(
@@ -109,7 +110,9 @@ export class LocalRealtimeClient {
             handler.onClose?.(event);
           }
         }
-        this.handlers.clear();
+        if (this.closed) {
+          this.handlers.clear();
+        }
       };
     } catch (error) {
       const connectionError =
