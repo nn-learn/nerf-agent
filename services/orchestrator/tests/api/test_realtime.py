@@ -482,7 +482,6 @@ def test_barge_in_interrupts_and_local_turns_remain_serial(tmp_path: Path) -> No
             "reason": "user_barge_in",
         }
         socket.send_json({"type": "audio.stop"})
-        assert socket.receive_json()["type"] == "turn.completed"
         assert socket.receive_json()["type"] == "transcript.partial"
 
     assert "user_barge_in" in manager.interrupt_reasons
@@ -531,16 +530,35 @@ def test_cancellation_resistant_turn_does_not_block_next_utterance(
             safety_release.start()
             started = time.perf_counter()
             socket.send_json({"type": "audio.stop"})
-            assert socket.receive_json()["type"] == "transcript.partial"
+            socket.send_bytes(b"\x03\x00" * 320)
+            second_partial_received = False
+            for _ in range(5):
+                payload = socket.receive_json()
+                if payload["type"] == "transcript.partial":
+                    second_partial_received = True
+                if payload == {
+                    "type": "error",
+                    "code": "AUDIO_NOT_STARTED",
+                }:
+                    break
+            else:
+                pytest.fail("receive loop did not process pending-turn input")
             elapsed = time.perf_counter() - started
             manager.release_stale_turn.set()
+            if not second_partial_received:
+                for _ in range(5):
+                    if socket.receive_json()["type"] == "transcript.partial":
+                        second_partial_received = True
+                        break
     finally:
         safety_release.cancel()
         manager.release_stale_turn.set()
 
     assert elapsed < 1
+    assert second_partial_received
     assert manager.swallowed_cancellation.is_set()
     assert len(manager.turns) == 2
+    assert manager.max_concurrent_turns == 1
 
 
 def test_disconnect_cleanup_is_bounded_when_provider_ignores_cancel(

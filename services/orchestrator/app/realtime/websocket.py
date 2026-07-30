@@ -321,6 +321,8 @@ async def handle_realtime_websocket(
     segmenter: VadUtteranceSegmenter | None = None
     turn_task: asyncio.Task[object] | None = None
     turn_obsolete: asyncio.Event | None = None
+    pending_utterance: tuple[PcmChunk, ...] | None = None
+    accepting_turns = True
     capture_active = False
     sequence = 0
 
@@ -355,6 +357,8 @@ async def handle_realtime_websocket(
         current_observer: WebSocketTurnObserver,
         obsolete: asyncio.Event,
     ) -> object:
+        nonlocal accepting_turns, pending_utterance
+
         async def chunks() -> AsyncIterator[PcmChunk]:
             for chunk in utterance:
                 yield chunk
@@ -371,6 +375,8 @@ async def handle_realtime_websocket(
         except Exception:
             if obsolete.is_set():
                 raise
+            accepting_turns = False
+            pending_utterance = None
             await current_observer.send_protocol(
                 {"type": "error", "code": "PROVIDER_ERROR"}
             )
@@ -378,18 +384,31 @@ async def handle_realtime_websocket(
                 await websocket.close(
                     code=INTERNAL_ERROR,
                     reason="voice provider failed",
-                )
+            )
             raise
 
-    async def start_turn(
+    def on_turn_done(completed: asyncio.Task[object]) -> None:
+        nonlocal pending_utterance, turn_obsolete, turn_task
+        _consume_task_result(completed)
+        if turn_task is not completed:
+            return
+        turn_task = None
+        turn_obsolete = None
+        if (
+            not accepting_turns
+            or pending_utterance is None
+            or observer is None
+        ):
+            return
+        next_utterance = pending_utterance
+        pending_utterance = None
+        launch_turn(next_utterance, observer)
+
+    def launch_turn(
         utterance: tuple[PcmChunk, ...],
         current_observer: WebSocketTurnObserver,
     ) -> None:
         nonlocal turn_obsolete, turn_task
-        if turn_task is not None:
-            if turn_obsolete is not None:
-                turn_obsolete.set()
-            await _cancel_task_bounded(turn_task)
         turn_obsolete = asyncio.Event()
         turn_task = asyncio.create_task(
             run_audio_turn(
@@ -398,6 +417,40 @@ async def handle_realtime_websocket(
                 turn_obsolete,
             )
         )
+        turn_task.add_done_callback(on_turn_done)
+
+    def start_or_queue_turn(
+        utterance: tuple[PcmChunk, ...],
+        current_observer: WebSocketTurnObserver,
+    ) -> None:
+        nonlocal pending_utterance
+        if not accepting_turns:
+            return
+        if turn_task is None:
+            launch_turn(utterance, current_observer)
+            return
+        pending_utterance = utterance
+
+    async def interrupt_current_turn(
+        current_observer: WebSocketTurnObserver,
+        *,
+        reason: str,
+    ) -> None:
+        active_task = turn_task
+        active_obsolete = turn_obsolete
+        if active_obsolete is not None:
+            active_obsolete.set()
+        outcome = await manager.interrupt(
+            session_id,
+            reason=reason,
+        )
+        if active_task is not None and not active_task.done():
+            active_task.cancel()
+        if outcome.interrupted:
+            await current_observer.send_interruption(
+                turn_id=outcome.turn_id,
+                reason=reason,
+            )
 
     try:
         try:
@@ -507,6 +560,8 @@ async def handle_realtime_websocket(
                 try:
                     result = segmenter.push(chunk)
                 except Exception:
+                    accepting_turns = False
+                    pending_utterance = None
                     await close_for_vad_error(
                         observer,
                         code="VAD_PROCESSING_FAILED",
@@ -518,17 +573,12 @@ async def handle_realtime_websocket(
                     and turn_task is not None
                     and not turn_task.done()
                 ):
-                    outcome = await manager.interrupt(
-                        session_id,
+                    await interrupt_current_turn(
+                        observer,
                         reason="user_barge_in",
                     )
-                    if outcome.interrupted:
-                        await observer.send_interruption(
-                            turn_id=outcome.turn_id,
-                            reason="user_barge_in",
-                        )
                 if result.utterance is not None:
-                    await start_turn(result.utterance, observer)
+                    start_or_queue_turn(result.utterance, observer)
                 continue
 
             text = message.get("text")
@@ -568,18 +618,15 @@ async def handle_realtime_websocket(
                 capture_active = False
                 utterance = segmenter.flush()
                 if utterance is not None:
-                    await start_turn(utterance, observer)
+                    start_or_queue_turn(utterance, observer)
             elif isinstance(control, InterruptMessage):
-                outcome = await manager.interrupt(
-                    session_id,
+                await interrupt_current_turn(
+                    observer,
                     reason=control.reason,
                 )
-                if outcome.interrupted:
-                    await observer.send_interruption(
-                        turn_id=outcome.turn_id,
-                        reason=control.reason,
-                    )
             elif isinstance(control, SessionEndMessage):
+                accepting_turns = False
+                pending_utterance = None
                 capture_active = False
                 segmenter.reset()
                 await manager.end_session(session_id)
@@ -591,6 +638,8 @@ async def handle_realtime_websocket(
     except WebSocketDisconnect:
         pass
     finally:
+        accepting_turns = False
+        pending_utterance = None
         capture_active = False
         if segmenter is not None:
             segmenter.reset()
@@ -602,7 +651,9 @@ async def handle_realtime_websocket(
                     session_id,
                     reason="websocket_disconnected",
                 )
-        if turn_task is not None:
-            if turn_obsolete is not None:
-                turn_obsolete.set()
-            await _cancel_task_bounded(turn_task)
+        active_task = turn_task
+        if active_task is not None:
+            active_obsolete = turn_obsolete
+            if active_obsolete is not None:
+                active_obsolete.set()
+            await _cancel_task_bounded(active_task)
