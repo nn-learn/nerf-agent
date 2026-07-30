@@ -27,6 +27,7 @@ apps/web/vite.config.d.ts
 # Editors and OS
 .idea/
 .vscode/
+.worktrees/
 .DS_Store
 Thumbs.db
 
