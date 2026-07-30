@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+import time
 import warnings
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -53,6 +55,12 @@ class AlwaysSpeechVad:
         _ = chunk
         self.calls += 1
         return True
+
+
+class FailingPushVad:
+    def is_speech(self, chunk: PcmChunk) -> bool:
+        _ = chunk
+        raise RuntimeError("VAD processing failed")
 
 
 class FakeTranscriber(FasterWhisperProvider):
@@ -154,6 +162,63 @@ class RecordingManager:
         return object()
 
 
+class CancellationResistantManager(RecordingManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release_stale_turn = threading.Event()
+        self.swallowed_cancellation = threading.Event()
+
+    async def process_audio_turn(
+        self,
+        session_id: str,
+        *,
+        chunks: AsyncIterator[PcmChunk],
+        transcriber: FasterWhisperProvider,
+        observer: WebSocketTurnObserver,
+    ) -> object:
+        _ = transcriber
+        captured = tuple([chunk async for chunk in chunks])
+        self.turns.append(captured)
+        self.observers.append(observer)
+        self.concurrent_turns += 1
+        self.max_concurrent_turns = max(
+            self.max_concurrent_turns,
+            self.concurrent_turns,
+        )
+        call_number = len(self.turns)
+        turn = TurnHandle(
+            session_id=session_id,
+            turn_id=f"turn_{call_number}",
+            cancel_token=f"ct_{call_number}",
+        )
+        try:
+            await observer.on_event(
+                turn,
+                "transcript.partial",
+                {
+                    "kind": "PARTIAL",
+                    "text": f"heard {len(captured)}",
+                    "start_ms": 0,
+                    "end_ms": len(captured) * 20,
+                },
+            )
+            if call_number == 1:
+                while not self.release_stale_turn.is_set():
+                    try:
+                        await asyncio.sleep(0.01)
+                    except asyncio.CancelledError:
+                        self.swallowed_cancellation.set()
+                return object()
+            await observer.on_event(
+                turn,
+                "turn.completed",
+                {"delivery_mode": "text"},
+            )
+            return object()
+        finally:
+            self.concurrent_turns -= 1
+
+
 def make_socket_app(
     tmp_path: Path,
     *,
@@ -211,6 +276,24 @@ def test_wrong_origin_closes_with_policy_violation(tmp_path: Path) -> None:
 
     with TestClient(app, base_url="http://localhost") as client:
         assert_policy_close(connect(client, origin="https://evil.example"))
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:not-a-port",
+        "http://[::1",
+    ],
+)
+def test_malformed_origin_closes_without_handler_error(
+    tmp_path: Path,
+    origin: str,
+) -> None:
+    """Catches malformed unauthenticated Origin values escaping as tracebacks."""
+    app, _, _ = make_socket_app(tmp_path)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        assert_policy_close(connect(client, origin=origin))
 
 
 def test_non_loopback_ws_requires_transport_security(tmp_path: Path) -> None:
@@ -278,6 +361,56 @@ def test_valid_auth_receives_session_ready(tmp_path: Path) -> None:
         authenticate(socket)
 
 
+def test_vad_factory_failure_sends_error_and_closes_1011(
+    tmp_path: Path,
+) -> None:
+    """Catches VAD initialization failures escaping the socket handler."""
+
+    def failing_vad_factory() -> AlwaysSpeechVad:
+        raise RuntimeError("VAD initialization failed")
+
+    app, _, _ = make_socket_app(
+        tmp_path,
+        vad_factory=failing_vad_factory,
+    )
+
+    with TestClient(app, base_url="http://localhost") as client, connect(client) as socket:
+        socket.send_json(AUTH_MESSAGE)
+        assert socket.receive_json() == {
+            "type": "error",
+            "code": "VAD_UNAVAILABLE",
+            "recoverable": False,
+        }
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_json()
+
+    assert closed.value.code == 1011
+
+
+def test_vad_push_failure_sends_error_and_closes_1011(
+    tmp_path: Path,
+) -> None:
+    """Catches VAD runtime failures escaping without a terminal protocol error."""
+    app, _, _ = make_socket_app(
+        tmp_path,
+        vad_factory=FailingPushVad,
+    )
+
+    with TestClient(app, base_url="http://localhost") as client, connect(client) as socket:
+        authenticate(socket)
+        socket.send_json(AUDIO_START)
+        socket.send_bytes(b"\x00" * 640)
+        assert socket.receive_json() == {
+            "type": "error",
+            "code": "VAD_PROCESSING_FAILED",
+            "recoverable": False,
+        }
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_json()
+
+    assert closed.value.code == 1011
+
+
 def test_invalid_binary_frame_returns_protocol_error(tmp_path: Path) -> None:
     """Catches malformed PCM being passed to VAD or transcription."""
     app, manager, _ = make_socket_app(tmp_path)
@@ -292,6 +425,24 @@ def test_invalid_binary_frame_returns_protocol_error(tmp_path: Path) -> None:
             "code": "INVALID_AUDIO_FRAME",
         }
 
+    assert manager.turns == []
+
+
+def test_oversized_binary_frame_closes_with_message_too_big(
+    tmp_path: Path,
+) -> None:
+    """Catches oversized binary media remaining on a reusable connection."""
+    app, manager, _ = make_socket_app(tmp_path)
+
+    with TestClient(app, base_url="http://localhost") as client, connect(client) as socket:
+        authenticate(socket)
+        socket.send_json(AUDIO_START)
+        socket.send_bytes(b"\x00" * 641)
+
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_json()
+
+    assert closed.value.code == 1009
     assert manager.turns == []
 
 
@@ -353,6 +504,75 @@ def test_disconnect_interrupts_turn_and_closes_observer(tmp_path: Path) -> None:
     assert manager.interrupt_reasons[-1] == "websocket_disconnected"
     assert len(manager.observers) == 1
     assert manager.observers[0].closed
+
+
+def test_cancellation_resistant_turn_does_not_block_next_utterance(
+    tmp_path: Path,
+) -> None:
+    """Catches a provider swallowing cancellation and freezing socket receive."""
+    manager = CancellationResistantManager()
+    app, _, _ = make_socket_app(tmp_path, manager=manager)
+    safety_release = threading.Timer(
+        2,
+        manager.release_stale_turn.set,
+    )
+
+    try:
+        with TestClient(app, base_url="http://localhost") as client, connect(client) as socket:
+            authenticate(socket)
+            socket.send_json(AUDIO_START)
+            socket.send_bytes(b"\x01\x00" * 320)
+            socket.send_json({"type": "audio.stop"})
+            assert socket.receive_json()["type"] == "transcript.partial"
+
+            socket.send_json(AUDIO_START)
+            socket.send_bytes(b"\x02\x00" * 320)
+            assert socket.receive_json()["type"] == "playback.interrupted"
+            safety_release.start()
+            started = time.perf_counter()
+            socket.send_json({"type": "audio.stop"})
+            assert socket.receive_json()["type"] == "transcript.partial"
+            elapsed = time.perf_counter() - started
+            manager.release_stale_turn.set()
+    finally:
+        safety_release.cancel()
+        manager.release_stale_turn.set()
+
+    assert elapsed < 1
+    assert manager.swallowed_cancellation.is_set()
+    assert len(manager.turns) == 2
+
+
+def test_disconnect_cleanup_is_bounded_when_provider_ignores_cancel(
+    tmp_path: Path,
+) -> None:
+    """Catches disconnect awaiting a cancellation-resistant task forever."""
+    manager = CancellationResistantManager()
+    app, _, _ = make_socket_app(tmp_path, manager=manager)
+    safety_release = threading.Timer(
+        2,
+        manager.release_stale_turn.set,
+    )
+
+    try:
+        with TestClient(app, base_url="http://localhost") as client:
+            safety_release.start()
+            started = time.perf_counter()
+            with connect(client) as socket:
+                authenticate(socket)
+                socket.send_json(AUDIO_START)
+                socket.send_bytes(b"\x01\x00" * 320)
+                socket.send_json({"type": "audio.stop"})
+                assert socket.receive_json()["type"] == "transcript.partial"
+            elapsed = time.perf_counter() - started
+            manager.release_stale_turn.set()
+    finally:
+        safety_release.cancel()
+        manager.release_stale_turn.set()
+
+    assert elapsed < 1
+    assert manager.swallowed_cancellation.is_set()
+    assert manager.interrupt_reasons[-1] == "websocket_disconnected"
 
 
 def test_audio_turn_event_store_payloads_contain_no_bytes(tmp_path: Path) -> None:

@@ -24,6 +24,8 @@ from app.security.auth import (
 from app.settings import Settings
 
 MAX_TEXT_MESSAGE_BYTES = 2048
+MAX_BINARY_FRAME_BYTES = 640
+TURN_TASK_CANCEL_TIMEOUT_SECONDS = 0.25
 POLICY_VIOLATION = 1008
 MESSAGE_TOO_BIG = 1009
 INTERNAL_ERROR = 1011
@@ -121,6 +123,26 @@ class ClientMessageError(ValueError):
 
 class ClientMessageTooLarge(ClientMessageError):
     pass
+
+
+def _consume_task_result(task: asyncio.Task[object]) -> None:
+    with suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
+async def _cancel_task_bounded(task: asyncio.Task[object]) -> None:
+    if task.done():
+        _consume_task_result(task)
+        return
+    task.cancel()
+    done, _ = await asyncio.wait(
+        {task},
+        timeout=TURN_TASK_CANCEL_TIMEOUT_SECONDS,
+    )
+    if task in done:
+        _consume_task_result(task)
+        return
+    task.add_done_callback(_consume_task_result)
 
 
 def parse_client_message(text: str) -> ClientMessage:
@@ -298,6 +320,7 @@ async def handle_realtime_websocket(
     observer: WebSocketTurnObserver | None = None
     segmenter: VadUtteranceSegmenter | None = None
     turn_task: asyncio.Task[object] | None = None
+    turn_obsolete: asyncio.Event | None = None
     capture_active = False
     sequence = 0
 
@@ -307,9 +330,30 @@ async def handle_realtime_websocket(
     async def send_bytes(payload: bytes) -> None:
         await websocket.send_bytes(payload)
 
+    async def close_for_vad_error(
+        current_observer: WebSocketTurnObserver,
+        *,
+        code: str,
+        reason: str,
+    ) -> None:
+        with suppress(RuntimeError, WebSocketDisconnect):
+            await current_observer.send_protocol(
+                {
+                    "type": "error",
+                    "code": code,
+                    "recoverable": False,
+                }
+            )
+        with suppress(RuntimeError):
+            await websocket.close(
+                code=INTERNAL_ERROR,
+                reason=reason,
+            )
+
     async def run_audio_turn(
         utterance: tuple[PcmChunk, ...],
         current_observer: WebSocketTurnObserver,
+        obsolete: asyncio.Event,
     ) -> object:
         async def chunks() -> AsyncIterator[PcmChunk]:
             for chunk in utterance:
@@ -325,6 +369,8 @@ async def handle_realtime_websocket(
         except asyncio.CancelledError:
             raise
         except Exception:
+            if obsolete.is_set():
+                raise
             await current_observer.send_protocol(
                 {"type": "error", "code": "PROVIDER_ERROR"}
             )
@@ -339,12 +385,18 @@ async def handle_realtime_websocket(
         utterance: tuple[PcmChunk, ...],
         current_observer: WebSocketTurnObserver,
     ) -> None:
-        nonlocal turn_task
+        nonlocal turn_obsolete, turn_task
         if turn_task is not None:
-            with suppress(asyncio.CancelledError):
-                await turn_task
+            if turn_obsolete is not None:
+                turn_obsolete.set()
+            await _cancel_task_bounded(turn_task)
+        turn_obsolete = asyncio.Event()
         turn_task = asyncio.create_task(
-            run_audio_turn(utterance, current_observer)
+            run_audio_turn(
+                utterance,
+                current_observer,
+                turn_obsolete,
+            )
         )
 
     try:
@@ -407,11 +459,19 @@ async def handle_realtime_websocket(
             send_json=send_json,
             send_bytes=send_bytes,
         )
-        segmenter = VadUtteranceSegmenter(
-            vad=vad_factory(),
-            end_silence_frames=settings.utterance_end_silence_ms // 20,
-            max_utterance_frames=settings.utterance_max_ms // 20,
-        )
+        try:
+            segmenter = VadUtteranceSegmenter(
+                vad=vad_factory(),
+                end_silence_frames=settings.utterance_end_silence_ms // 20,
+                max_utterance_frames=settings.utterance_max_ms // 20,
+            )
+        except Exception:
+            await close_for_vad_error(
+                observer,
+                code="VAD_UNAVAILABLE",
+                reason="VAD initialization failed",
+            )
+            return
         await observer.send_protocol(
             {"type": "session.ready", "session_id": session_id}
         )
@@ -422,12 +482,18 @@ async def handle_realtime_websocket(
                 break
             binary = message.get("bytes")
             if isinstance(binary, bytes):
+                if len(binary) > MAX_BINARY_FRAME_BYTES:
+                    await websocket.close(
+                        code=MESSAGE_TOO_BIG,
+                        reason="binary frame too large",
+                    )
+                    break
                 if not capture_active:
                     await observer.send_protocol(
                         {"type": "error", "code": "AUDIO_NOT_STARTED"}
                     )
                     continue
-                if len(binary) != 640:
+                if len(binary) != MAX_BINARY_FRAME_BYTES:
                     await observer.send_protocol(
                         {"type": "error", "code": "INVALID_AUDIO_FRAME"}
                     )
@@ -438,7 +504,15 @@ async def handle_realtime_websocket(
                     pcm_s16le=binary,
                 )
                 sequence += 1
-                result = segmenter.push(chunk)
+                try:
+                    result = segmenter.push(chunk)
+                except Exception:
+                    await close_for_vad_error(
+                        observer,
+                        code="VAD_PROCESSING_FAILED",
+                        reason="VAD processing failed",
+                    )
+                    break
                 if (
                     result.speech_started
                     and turn_task is not None
@@ -529,7 +603,6 @@ async def handle_realtime_websocket(
                     reason="websocket_disconnected",
                 )
         if turn_task is not None:
-            if not turn_task.done():
-                turn_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await turn_task
+            if turn_obsolete is not None:
+                turn_obsolete.set()
+            await _cancel_task_bounded(turn_task)

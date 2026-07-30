@@ -43,19 +43,24 @@ def websocket_origin_allowed(
 ) -> bool:
     if origin is None:
         return False
-    actual = urlsplit(origin)
-    configured = urlsplit(configured_origin)
+    try:
+        actual = urlsplit(origin)
+        configured = urlsplit(configured_origin)
+        actual_port = actual.port
+        configured_port = configured.port
+    except ValueError:
+        return False
     return (
         actual.scheme.lower(),
         actual.hostname,
-        actual.port,
+        actual_port,
         actual.path.rstrip("/"),
         actual.query,
         actual.fragment,
     ) == (
         configured.scheme.lower(),
         configured.hostname,
-        configured.port,
+        configured_port,
         configured.path.rstrip("/"),
         configured.query,
         configured.fragment,
