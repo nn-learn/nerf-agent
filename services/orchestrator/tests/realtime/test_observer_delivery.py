@@ -5,11 +5,14 @@ from pathlib import Path
 import pytest
 
 from app.events.store import EventStore
+from app.providers.edge_tts import EdgeTtsProvider
 from app.providers.faster_whisper import FasterWhisperProvider
 from app.providers.mock import MockAgentProvider
 from app.providers.protocols import AgentPlan
+from app.providers.runtime import EdgeTtsAudioBridge
 from app.realtime.models import PcmChunk, TranscriptEvent, TranscriptKind, TurnHandle
 from app.realtime.session import MockAudioBridge, SessionManager, TurnStatus
+from app.realtime.turn_coordinator import TurnCoordinator
 from app.safety.models import RiskAssessment
 
 
@@ -362,3 +365,124 @@ async def test_interrupt_and_binary_delivery_share_one_ordered_gate(
     assert outcome.interrupted
     assert result.status is TurnStatus.INTERRUPTED
     assert len(observer.audio) == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_cannot_also_be_interrupted(
+    tmp_path: Path,
+) -> None:
+    """Catches completion releasing its lock before clearing the active turn."""
+
+    class BlockingCompletionObserver(RecordingObserver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completion_started = asyncio.Event()
+            self.completion_release = asyncio.Event()
+
+        async def on_event(
+            self,
+            turn: TurnHandle,
+            event_type: str,
+            payload: dict[str, object],
+        ) -> None:
+            await super().on_event(turn, event_type, payload)
+            if event_type == "turn.completed":
+                self.completion_started.set()
+                await self.completion_release.wait()
+
+    store = EventStore(tmp_path / "events.sqlite3")
+    observer = BlockingCompletionObserver()
+    manager = SessionManager(store=store)
+    session = await manager.create_session(camera_consent=False)
+    running_turn = asyncio.create_task(
+        manager.process_text_turn(
+            session.session_id,
+            text="最近压力很大",
+            observer=observer,
+        )
+    )
+    await asyncio.wait_for(observer.completion_started.wait(), timeout=1)
+    interrupt = asyncio.create_task(
+        manager.interrupt(session.session_id, reason="user_speech")
+    )
+    await asyncio.sleep(0)
+    assert not interrupt.done()
+
+    observer.completion_release.set()
+    result = await asyncio.wait_for(running_turn, timeout=1)
+    outcome = await asyncio.wait_for(interrupt, timeout=1)
+
+    assert result.status is TurnStatus.COMPLETED
+    assert not outcome.interrupted
+    stored = await store.list_session(session.session_id)
+    turn_events = [event.type for event in stored if event.turn_id == result.turn_id]
+    assert turn_events.count("turn.completed") == 1
+    assert "playback.interrupted" not in turn_events
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError])
+@pytest.mark.asyncio
+async def test_edge_tts_runtime_failures_degrade_to_displayed_text(
+    tmp_path: Path,
+    error_type: type[Exception],
+) -> None:
+    """Catches real TTS/FFmpeg failures bypassing SessionManager fallback."""
+
+    async def failing_pcm_source(
+        text: str,
+        voice: str,
+    ) -> AsyncIterator[bytes]:
+        _ = (text, voice)
+        raise error_type("TTS subprocess failed")
+        yield b""
+
+    store = EventStore(tmp_path / "events.sqlite3")
+    coordinator = TurnCoordinator()
+    provider = EdgeTtsProvider(
+        registry=coordinator.tokens,
+        pcm_source=failing_pcm_source,
+    )
+    manager = SessionManager(
+        store=store,
+        coordinator=coordinator,
+        audio_bridge=EdgeTtsAudioBridge(provider),
+    )
+    session = await manager.create_session(camera_consent=False)
+
+    result = await manager.process_text_turn(
+        session.session_id,
+        text="请改用文字",
+    )
+
+    assert result.status is TurnStatus.COMPLETED
+    assert result.delivery_mode == "text"
+    stored = await store.list_session(session.session_id)
+    turn_events = [event.type for event in stored if event.turn_id == result.turn_id]
+    assert "tts.degraded" in turn_events
+    assert "response.displayed" in turn_events
+    assert "tts.audio.chunk" not in turn_events
+
+
+@pytest.mark.asyncio
+async def test_edge_tts_bridge_preserves_cancellation() -> None:
+    """Catches cancellation being rewritten as ordinary TTS degradation."""
+
+    async def cancelled_pcm_source(
+        text: str,
+        voice: str,
+    ) -> AsyncIterator[bytes]:
+        _ = (text, voice)
+        raise asyncio.CancelledError
+        yield b""
+
+    coordinator = TurnCoordinator()
+    turn = await coordinator.start_turn("session_1")
+    bridge = EdgeTtsAudioBridge(
+        EdgeTtsProvider(
+            registry=coordinator.tokens,
+            pcm_source=cancelled_pcm_source,
+        )
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        _ = [chunk async for chunk in bridge.synthesize("text", turn=turn)]

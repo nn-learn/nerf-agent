@@ -334,10 +334,9 @@ class SessionManager:
                     observer=current_observer,
                 ):
                     return self._interrupted_result(active)
-                if not await self._emit_current(
+                if not await self._complete_active_turn(
                     runtime,
                     active,
-                    "turn.completed",
                     {"delivery_mode": "text"},
                     observer=current_observer,
                 ):
@@ -640,10 +639,9 @@ class SessionManager:
                         response=response,
                     )
 
-        if not await self._emit_current(
+        if not await self._complete_active_turn(
             runtime,
             active,
-            "turn.completed",
             {"delivery_mode": delivery_mode},
             observer=observer,
         ):
@@ -816,6 +814,45 @@ class SessionManager:
             ):
                 return False
             await observer.on_audio(active.handle, chunk)
+            return True
+
+    async def _complete_active_turn(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+        payload: dict[str, object],
+        *,
+        observer: TurnObserver,
+    ) -> bool:
+        async with runtime.event_lock:
+            if runtime.active_turn is not active:
+                return False
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            await self.store.append_payload(
+                session_id=active.handle.session_id,
+                turn_id=active.handle.turn_id,
+                trace_id=active.trace_id,
+                cancel_token=active.handle.cancel_token,
+                event_type="turn.completed",
+                payload=payload,
+            )
+            try:
+                if await self._coordinator.tokens.is_current(
+                    active.handle.turn_id,
+                    active.handle.cancel_token,
+                ):
+                    await observer.on_event(
+                        active.handle,
+                        "turn.completed",
+                        payload,
+                    )
+            finally:
+                runtime.active_turn = None
+                await self._coordinator.complete_turn(active.handle)
             return True
 
     async def _emit_visual_if_consented(

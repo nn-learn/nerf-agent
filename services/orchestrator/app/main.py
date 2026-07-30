@@ -28,12 +28,24 @@ def create_app(
     coordinator: TurnCoordinator | None = None,
 ) -> FastAPI:
     current = settings or Settings()
-    active_coordinator = coordinator or TurnCoordinator()
     owns_providers = runtime_providers is None
-    providers = runtime_providers or build_runtime_providers(
-        current,
-        registry=active_coordinator.tokens,
-    )
+    if runtime_providers is None:
+        active_coordinator = coordinator or TurnCoordinator()
+        providers = build_runtime_providers(
+            current,
+            registry=active_coordinator.tokens,
+        )
+    else:
+        if coordinator is None:
+            raise ValueError(
+                "coordinator is required with injected runtime providers"
+            )
+        if runtime_providers.registry is not coordinator.tokens:
+            raise ValueError(
+                "runtime provider registry must be coordinator.tokens"
+            )
+        active_coordinator = coordinator
+        providers = runtime_providers
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:

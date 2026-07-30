@@ -86,6 +86,7 @@ async def test_local_ready_health_reports_exact_provider_status(tmp_path) -> Non
     settings = Settings(
         provider_mode="local",
         event_database_path=tmp_path / "events.sqlite3",
+        tts_voice="zh-CN-YunxiNeural",
     )
     coordinator = TurnCoordinator()
     async with AsyncClient(
@@ -120,7 +121,7 @@ async def test_local_ready_health_reports_exact_provider_status(tmp_path) -> Non
         "providers": {
             "ollama": {"ready": True, "model": "qwen3.6:latest"},
             "stt": {"ready": True, "model": "small", "device": "cpu"},
-            "tts": {"ready": True, "voice": "zh-CN-XiaoxiaoNeural"},
+            "tts": {"ready": True, "voice": "zh-CN-YunxiNeural"},
         },
     }
 

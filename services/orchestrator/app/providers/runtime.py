@@ -25,7 +25,7 @@ from app.rag.retriever import (
     HybridRetriever,
 )
 from app.realtime.models import PcmChunk, TurnHandle
-from app.realtime.session import AudioBridge, MockAudioBridge
+from app.realtime.session import AudioBridge, AudioUnavailable, MockAudioBridge
 from app.safety.models import RiskLevel
 from app.settings import Settings
 
@@ -34,18 +34,24 @@ class EdgeTtsAudioBridge:
     def __init__(self, provider: EdgeTtsProvider) -> None:
         self._provider = provider
 
-    def synthesize(
+    async def synthesize(
         self,
         text: str,
         *,
         turn: TurnHandle,
     ) -> AsyncIterator[PcmChunk]:
-        return self._provider.synthesize(
-            text,
-            turn_id=turn.turn_id,
-            cancel_token=turn.cancel_token,
-            start_pts_ms=0,
-        )
+        try:
+            async for chunk in self._provider.synthesize(
+                text,
+                turn_id=turn.turn_id,
+                cancel_token=turn.cancel_token,
+                start_pts_ms=0,
+            ):
+                yield chunk
+        except (RuntimeError, OSError) as error:
+            raise AudioUnavailable(
+                "local TTS provider is unavailable"
+            ) from error
 
 
 class LazyReviewedRetriever:
@@ -128,10 +134,12 @@ class LazyReviewedRetriever:
 @dataclass(slots=True)
 class RuntimeProviders:
     provider_mode: str
+    registry: CancellationRegistry
     agent_provider: AgentProvider
     transcriber: FasterWhisperProvider | None
     audio_bridge: AudioBridge
     ollama: OllamaTextProvider | None
+    tts_voice: str
     prewarm_task: asyncio.Task[None] | None = None
 
     def start_prewarm(self) -> None:
@@ -177,7 +185,7 @@ class RuntimeProviders:
                 "reason": result.reason,
             },
             "stt": {"ready": self.transcriber is not None, "model": "small"},
-            "tts": {"ready": True, "voice": "zh-CN-XiaoxiaoNeural"},
+            "tts": {"ready": True, "voice": self.tts_voice},
         }
 
     async def aclose(self) -> None:
@@ -200,10 +208,12 @@ def build_runtime_providers(
     if settings.provider_mode != "local":
         return RuntimeProviders(
             provider_mode=settings.provider_mode,
+            registry=registry,
             agent_provider=MockAgentProvider(),
             transcriber=None,
             audio_bridge=MockAudioBridge(),
             ollama=None,
+            tts_voice=settings.tts_voice,
         )
 
     ollama = OllamaTextProvider(
@@ -234,6 +244,7 @@ def build_runtime_providers(
     )
     return RuntimeProviders(
         provider_mode="local",
+        registry=registry,
         agent_provider=LocalAgentProvider(
             text_provider=ollama,
             retriever=retriever,
@@ -242,4 +253,5 @@ def build_runtime_providers(
         transcriber=transcriber,
         audio_bridge=EdgeTtsAudioBridge(edge_tts),
         ollama=ollama,
+        tts_voice=settings.tts_voice,
     )

@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from app.contracts.session import CancellationRegistry
+from app.main import create_app
 from app.providers.faster_whisper import FasterWhisperProvider
 from app.providers.local_agent import LocalAgentProvider
 from app.providers.mock import MockAgentProvider
@@ -18,6 +19,7 @@ from app.providers.runtime import (
 )
 from app.rag.retriever import EvidenceBundle, HybridRetriever
 from app.realtime.models import PcmChunk
+from app.realtime.turn_coordinator import TurnCoordinator
 from app.settings import Settings
 
 
@@ -318,3 +320,76 @@ async def test_edge_tts_bridge_streams_provider_chunks() -> None:
             pcm_s16le=b"\x00\x00" * 320,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_app_rejects_injected_runtime_without_coordinator(
+    tmp_path: Path,
+) -> None:
+    """Catches an injected bundle silently using a new cancellation registry."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(ollama_handler))
+    providers = build_runtime_providers(
+        Settings(provider_mode="local"),
+        registry=CancellationRegistry(),
+        ollama_client=client,
+        embedding_provider=FakeEmbeddingProvider(),
+        whisper_model_factory=fake_whisper_factory,
+    )
+    try:
+        with pytest.raises(
+            ValueError,
+            match="coordinator is required with injected runtime providers",
+        ):
+            create_app(
+                Settings(
+                    provider_mode="local",
+                    event_database_path=tmp_path / "events.sqlite3",
+                ),
+                runtime_providers=providers,
+            )
+    finally:
+        await providers.aclose()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_app_validates_and_shares_injected_registry(
+    tmp_path: Path,
+) -> None:
+    """Catches a supplied coordinator and providers using different tokens."""
+    coordinator = TurnCoordinator()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(ollama_handler))
+    providers = build_runtime_providers(
+        Settings(provider_mode="local"),
+        registry=coordinator.tokens,
+        ollama_client=client,
+        embedding_provider=FakeEmbeddingProvider(),
+        whisper_model_factory=fake_whisper_factory,
+    )
+    try:
+        with pytest.raises(
+            ValueError,
+            match="runtime provider registry must be coordinator.tokens",
+        ):
+            create_app(
+                Settings(
+                    provider_mode="local",
+                    event_database_path=tmp_path / "bad-events.sqlite3",
+                ),
+                runtime_providers=providers,
+                coordinator=TurnCoordinator(),
+            )
+
+        app = create_app(
+            Settings(
+                provider_mode="local",
+                event_database_path=tmp_path / "events.sqlite3",
+            ),
+            runtime_providers=providers,
+            coordinator=coordinator,
+        )
+        assert providers.registry is coordinator.tokens
+        assert app.state.session_manager._coordinator is coordinator
+    finally:
+        await providers.aclose()
+        await client.aclose()
