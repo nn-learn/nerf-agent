@@ -144,6 +144,35 @@ async def test_load_context_serializes_only_reviewed_evidence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_load_context_hides_chunks_from_insufficient_bundle() -> None:
+    """Catches insufficient retrieval candidates becoming citeable model evidence."""
+    retriever = RecordingRetriever(
+        EvidenceBundle(
+            query="最近压力很大",
+            items=[reviewed_item()],
+            has_sufficient_evidence=False,
+        )
+    )
+    text = RecordingTextProvider(
+        OllamaTextResult(
+            response=normal_response(),
+            metrics=OllamaMetrics(
+                total_duration_ns=0,
+                load_duration_ns=0,
+                prompt_eval_count=0,
+                eval_count=0,
+            ),
+        )
+    )
+    provider = LocalAgentProvider(text_provider=text, retriever=retriever)
+
+    context = await provider.load_context("最近压力很大", "", risk())
+
+    assert context["reviewed_evidence"] == []
+    assert context["has_sufficient_evidence"] is False
+
+
+@pytest.mark.asyncio
 async def test_plan_reply_forwards_turn_cancellation_and_returns_metrics() -> None:
     """Catches the graph losing cancellation identity or Ollama timing metrics."""
     response = normal_response()

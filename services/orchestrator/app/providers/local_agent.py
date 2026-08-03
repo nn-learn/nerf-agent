@@ -45,7 +45,9 @@ class LocalAgentProvider:
             "visual_summary": visual_summary,
             "reviewed_evidence": [
                 item.model_dump(mode="json") for item in bundle.items
-            ],
+            ]
+            if bundle.has_sufficient_evidence
+            else [],
             "has_sufficient_evidence": bundle.has_sufficient_evidence,
             "working_memory": [],
             "long_term_memory": [],

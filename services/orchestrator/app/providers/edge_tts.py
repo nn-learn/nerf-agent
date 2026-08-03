@@ -11,7 +11,7 @@ async def _edge_tts_pcm_source(
     text: str,
     voice: str,
 ) -> AsyncIterator[bytes]:
-    import edge_tts  # type: ignore[import-not-found]
+    import edge_tts
 
     process = await asyncio.create_subprocess_exec(
         "ffmpeg",
