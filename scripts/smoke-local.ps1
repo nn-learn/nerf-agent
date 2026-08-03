@@ -64,6 +64,8 @@ try {
         throw "Session response did not contain the required credentials"
     }
     $headers = @{ Authorization = "Bearer $accessToken" }
+    $turnBody = @{ text = $prompt; visual_summary = "" } | ConvertTo-Json -Compress
+    $turnBodyBytes = [System.Text.Encoding]::UTF8.GetBytes($turnBody)
 
     $timer.Restart()
     try {
@@ -72,7 +74,7 @@ try {
             -Uri "$ApiBaseUrl/api/sessions/$([Uri]::EscapeDataString($sessionId))/turns" `
             -Headers $headers `
             -ContentType "application/json" `
-            -Body (@{ text = $prompt; visual_summary = "" } | ConvertTo-Json -Compress) `
+            -Body $turnBodyBytes `
             -TimeoutSec 240
     } catch {
         throw "Typed local turn failed"
