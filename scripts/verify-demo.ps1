@@ -27,6 +27,15 @@ function Invoke-Verification {
     }
 }
 
+Invoke-Verification "PowerShell launcher tests" $projectRoot {
+    $result = Invoke-Pester `
+        (Join-Path $projectRoot "scripts\tests\doctor.Tests.ps1") `
+        -PassThru
+    if ($result.FailedCount -gt 0) {
+        throw "PowerShell launcher tests failed"
+    }
+    $global:LASTEXITCODE = 0
+}
 Invoke-Verification "Orchestrator tests" $orchestratorRoot {
     & $python -m pytest -q
 }

@@ -98,6 +98,32 @@ async def test_api_responses_include_browser_security_headers(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cors_accepts_the_advertised_loopback_browser_origin(tmp_path) -> None:
+    """Catches the 127.0.0.1 demo URL being blocked by localhost-only CORS."""
+    app = create_app(
+        Settings(
+            provider_mode="mock",
+            event_database_path=tmp_path / "events.sqlite3",
+        )
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.options(
+            "/api/sessions",
+            headers={
+                "Origin": "http://127.0.0.1:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "http://127.0.0.1:5173"
+    )
+
+
+@pytest.mark.asyncio
 async def test_mutating_requests_are_rate_limited_per_client(tmp_path) -> None:
     settings = Settings(
         provider_mode="mock",

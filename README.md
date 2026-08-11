@@ -51,6 +51,9 @@ ollama list
 .\scripts\smoke-local.ps1
 ```
 
+`doctor.ps1` 会把 5173/8000 端口占用视为阻断性错误；请先停止已有 Demo
+再启动，脚本不会把旧工作树或旧 provider 的服务误报为本次启动成功。
+
 本机的 `qwen3.6:latest` 约 23 GB，首次载入可能较慢；启动脚本只对
 `OLLAMA_WARMING` 等待最多 240 秒，其他 readiness 错误会立即显示。Edge TTS
 需要网络访问，BGE-M3 可能在第一次检索时下载模型。麦克风 PCM、合成音频、视频和
@@ -79,12 +82,16 @@ faster-whisper small、BGE-M3 与 `qwen3.6:latest` 验收：
   `audio.stop` 后约 6.76 秒得到最终转写，约 62.87 秒得到上下文相关回复，
   `audio.start` 约 65.18 秒，首个二进制 PCM 块约 65.29 秒，`audio.end`
   约 73.98 秒；共在内存中接收 1,019 个音频块、652,160 字节。
+- 隔离 Chrome 的浏览器级补测使用假麦克风注入非个人测试音频：页面完成会话创建和
+  WebSocket 鉴权，麦克风按钮可正常开始/停止，Whisper 产出
+  `input_mode=voice` 的最终转写；Qwen 单轮约 23.80 秒，TTS 约 15.42 秒并返回
+  1,096 个 PCM 块，最终出现 `playback.started` 和 `turn.completed`。随后真实用户
+  浏览器会话也记录到多轮 `input_mode=voice` 转写，确认物理麦克风上传链路可用。
 
-这些是预录音 PCM 的协议级测量，不是浏览器真实麦克风或临床有效性验证。完整语音补测
-后的运行时 SQLite 隐私扫描仍为 `raw_audio=0`、`raw_video=0`、`camera_frame=0`、
-`binary_columns=0`。真实设备的收音、扬声器播放与自动播放权限仍需在浏览器中人工确认。
-因此当前 CPU-only 大模型结果不应描述为豆包级实时体验；若优先追求通话延迟，应由用户
-显式选择更轻量的本地文本模型。
+这些测量不是临床有效性验证。完整语音补测后的运行时 SQLite 隐私扫描仍为
+`raw_audio=0`、`raw_video=0`、`camera_frame=0`、`binary_columns=0`。真实扬声器的
+音量、音质和浏览器自动播放体验仍需由使用者人工确认。因此当前 CPU-only 大模型结果
+不应描述为豆包级实时体验；若优先追求通话延迟，应由用户显式选择更轻量的本地文本模型。
 
 ## 最快 mock 演示（无 GPU）
 
@@ -156,6 +163,7 @@ Set-Location services\avatar_radnerf
 
 它会执行：
 
+- PowerShell 启动器端口冲突回归测试
 - Orchestrator 全部测试、Ruff、严格 mypy
 - RAD-NeRF worker 的 CPU 协议测试（GPU smoke 明确跳过）
 - Web 单元测试和生产构建

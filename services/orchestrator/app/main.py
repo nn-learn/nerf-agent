@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import cast
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,22 @@ from app.security.middleware import (
     SecurityHeadersMiddleware,
 )
 from app.settings import Settings
+
+
+def _browser_origins(configured_origin: str) -> list[str]:
+    origins = [configured_origin]
+    parsed = urlsplit(configured_origin)
+    alias = {
+        "localhost": "127.0.0.1",
+        "127.0.0.1": "localhost",
+    }.get(parsed.hostname or "")
+    if alias is None:
+        return origins
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    origins.append(
+        urlunsplit((parsed.scheme, f"{alias}{port}", "", "", ""))
+    )
+    return origins
 
 
 def create_app(
@@ -75,7 +92,7 @@ def create_app(
     app.state.runtime_providers = providers
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[current.web_origin],
+        allow_origins=_browser_origins(current.web_origin),
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type", "Authorization"],

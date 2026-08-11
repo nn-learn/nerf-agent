@@ -45,6 +45,28 @@ function Get-HttpStatusCode {
     }
 }
 
+function Get-TcpListenerProcessId {
+    param([int]$Port)
+    $pattern = "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$"
+    foreach ($line in (& "$env:SystemRoot\System32\netstat.exe" -ano -p tcp)) {
+        if ($line -match $pattern) {
+            return [int]$Matches[1]
+        }
+    }
+    return $null
+}
+
+function Stop-StartedDemoProcesses {
+    param([System.Collections.IEnumerable]$StartedProcesses)
+    $processIds = @($StartedProcesses | ForEach-Object { $_.Id })
+    $processIds += @(8000, 5173 | ForEach-Object {
+        Get-TcpListenerProcessId -Port $_
+    })
+    foreach ($processId in @($processIds | Where-Object { $null -ne $_ } | Select-Object -Unique)) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-HttpErrorPayload {
     param([System.Management.Automation.ErrorRecord]$ErrorRecord)
     $body = $ErrorRecord.ErrorDetails.Message
@@ -192,14 +214,19 @@ try {
 try {
     Wait-OrchestratorReady -Url "http://127.0.0.1:8000/health/ready" -Mode $ProviderMode
     Wait-HttpSuccess "http://127.0.0.1:5173/"
+    $listenerProcesses = @(8000, 5173 | ForEach-Object {
+        $listenerProcessId = Get-TcpListenerProcessId -Port $_
+        if ($null -eq $listenerProcessId) {
+            throw "Demo readiness passed but port $_ has no listener process"
+        }
+        Get-Process -Id $listenerProcessId -ErrorAction Stop
+    })
 } catch {
-    foreach ($process in $started) {
-        Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
-    }
+    Stop-StartedDemoProcesses -StartedProcesses $started
     throw
 }
 
-$started |
+$listenerProcesses |
     Select-Object Id, ProcessName |
     ConvertTo-Json |
     Set-Content -Encoding utf8 (Join-Path $runtimeRoot "demo-processes.json")

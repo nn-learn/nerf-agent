@@ -278,6 +278,17 @@ def test_wrong_origin_closes_with_policy_violation(tmp_path: Path) -> None:
         assert_policy_close(connect(client, origin="https://evil.example"))
 
 
+def test_advertised_loopback_alias_can_authenticate(tmp_path: Path) -> None:
+    """Catches the 127.0.0.1 demo page being rejected by WebSocket Origin."""
+    app, _, _ = make_socket_app(tmp_path)
+
+    with TestClient(app, base_url="http://localhost") as client, connect(
+        client,
+        origin="http://127.0.0.1:5173",
+    ) as socket:
+        authenticate(socket)
+
+
 @pytest.mark.parametrize(
     "origin",
     [

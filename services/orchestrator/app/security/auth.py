@@ -51,19 +51,18 @@ def websocket_origin_allowed(
     except ValueError:
         return False
     return (
-        actual.scheme.lower(),
-        actual.hostname,
-        actual_port,
-        actual.path.rstrip("/"),
-        actual.query,
-        actual.fragment,
-    ) == (
-        configured.scheme.lower(),
-        configured.hostname,
-        configured_port,
-        configured.path.rstrip("/"),
-        configured.query,
-        configured.fragment,
+        actual.scheme.lower() == configured.scheme.lower()
+        and (
+            actual.hostname == configured.hostname
+            or (
+                _is_loopback_host(actual.hostname)
+                and _is_loopback_host(configured.hostname)
+            )
+        )
+        and actual_port == configured_port
+        and actual.path.rstrip("/") == configured.path.rstrip("/")
+        and actual.query == configured.query
+        and actual.fragment == configured.fragment
     )
 
 

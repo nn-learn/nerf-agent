@@ -148,7 +148,7 @@ $listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProp
 $ports = if ($ProviderMode -eq "real") { 7880, 7881, 8000, 5173 } else { 8000, 5173 }
 foreach ($port in $ports) {
     $inUse = $listeners -contains $port
-    Write-Check "Port $port" $(if ($inUse) { "WARN" } else { "PASS" }) $(if ($inUse) { "already in use; this may be an existing demo service" } else { "available" }) $false
+    Write-Check "Port $port" $(if ($inUse) { "FAIL" } else { "PASS" }) $(if ($inUse) { "already in use; stop the existing service before starting this demo" } else { "available" })
 }
 
 if ($requiredFailures -gt 0) {
