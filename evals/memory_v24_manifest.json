@@ -1,0 +1,33 @@
+{
+  "dataset_id": "psyavatar-memory-strategy-baseline-v2.4",
+  "dataset_version": "2.4.0",
+  "dataset_status": "ENGINEERING_FIXTURE",
+  "label_policy_version": "memory-relevance-v2",
+  "minimum_annotators": 2,
+  "cases": {
+    "stable_profile_evidence": {
+      "split": "DEV",
+      "slices": ["profile", "cross_session", "preference"]
+    },
+    "same_episode_multihop": {
+      "split": "DEV",
+      "slices": ["episode", "multi_hop"]
+    },
+    "semantic_coping_paraphrase": {
+      "split": "DEV",
+      "slices": ["semantic", "paraphrase", "coping"]
+    },
+    "temporal_city_update": {
+      "split": "TEST",
+      "slices": ["temporal_update", "superseded"]
+    },
+    "unknown_movie_abstention": {
+      "split": "TEST",
+      "slices": ["abstention", "irrelevant_context"]
+    },
+    "consent_integrity_isolation": {
+      "split": "TEST",
+      "slices": ["consent", "integrity", "third_party", "cross_user"]
+    }
+  }
+}

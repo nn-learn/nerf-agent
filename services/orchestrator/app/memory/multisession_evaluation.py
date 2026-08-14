@@ -5,11 +5,12 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, Field
 
+from app.memory.consolidation import MemoryProfileRepository
 from app.memory.models import (
     MemoryAspect,
     MemoryCandidate,
@@ -90,6 +91,19 @@ class MemoryRetriever(Protocol):
     ) -> list[RetrievedMemory]: ...
 
 
+@runtime_checkable
+class EvaluationPreparableMemoryRetriever(Protocol):
+    """Optional hook for background indexes that must be built outside timing."""
+
+    def prepare_for_evaluation(
+        self,
+        *,
+        user_id: str,
+        purpose_scope: str = "personalization",
+        as_of_ms: int | None = None,
+    ) -> None: ...
+
+
 class MemoryAnswerGenerator(Protocol):
     def generate(self, *, query: str, memories: list[RetrievedMemory]) -> str: ...
 
@@ -106,6 +120,7 @@ class QueryEvaluation(BaseModel):
     ndcg_at_5: float | None = Field(default=None, ge=0, le=1)
     correct_abstention: bool | None = None
     answer_adherent: bool | None = None
+    answer_failure_reasons: list[str] = Field(default_factory=list)
     false_memory_adopted: bool | None = None
     retrieval_latency_ms: float = Field(ge=0)
 
@@ -293,6 +308,12 @@ class MultiSessionMemoryEvaluator:
             for case in cases:
                 key_to_id = self._store_case(repository, case)
                 id_to_key = {memory_id: key for key, memory_id in key_to_id.items()}
+                if isinstance(retriever, EvaluationPreparableMemoryRetriever):
+                    for query in case.queries:
+                        retriever.prepare_for_evaluation(
+                            user_id=query.user_id,
+                            as_of_ms=query.as_of_ms,
+                        )
                 for query in case.queries:
                     started_at = time.perf_counter()
                     retrieved = retriever.retrieve(
@@ -302,16 +323,11 @@ class MultiSessionMemoryEvaluator:
                         as_of_ms=query.as_of_ms,
                     )
                     retrieval_latency_ms = (time.perf_counter() - started_at) * 1000
-                    retrieved_keys = [
-                        id_to_key[item.memory_id]
-                        for item in retrieved
-                        if item.memory_id in id_to_key
-                    ]
-                    retrieved_relevance_scores = {
-                        id_to_key[item.memory_id]: item.relevance_score
-                        for item in retrieved
-                        if item.memory_id in id_to_key
-                    }
+                    retrieved_keys = _source_memory_keys(retrieved, id_to_key)
+                    retrieved_relevance_scores = _source_relevance_scores(
+                        retrieved,
+                        id_to_key,
+                    )
                     relevant_keys = [
                         key for key, grade in query.relevance_grades.items() if grade > 0
                     ]
@@ -323,6 +339,7 @@ class MultiSessionMemoryEvaluator:
                     for key in forbidden_retrieved:
                         forbidden_leaks[query.forbidden_memories[key]] += 1
                     answer_adherent: bool | None = None
+                    answer_failure_reasons: list[str] = []
                     false_memory_adopted: bool | None = None
                     if self._answer_generator is not None:
                         answer = self._answer_generator.generate(
@@ -330,10 +347,11 @@ class MultiSessionMemoryEvaluator:
                             memories=retrieved,
                         )
                         if query.answer_expectation is not None:
-                            answer_adherent = _answer_is_adherent(
+                            answer_failure_reasons = _answer_adherence_failures(
                                 answer,
                                 query.answer_expectation,
                             )
+                            answer_adherent = not answer_failure_reasons
                         if query.adoption_watch_terms:
                             false_memory_adopted = any(
                                 term.casefold() in answer.casefold()
@@ -360,6 +378,7 @@ class MultiSessionMemoryEvaluator:
                             ),
                             correct_abstention=(not retrieved_keys if not relevant_keys else None),
                             answer_adherent=answer_adherent,
+                            answer_failure_reasons=answer_failure_reasons,
                             false_memory_adopted=false_memory_adopted,
                             retrieval_latency_ms=round(retrieval_latency_ms, 3),
                         )
@@ -429,6 +448,7 @@ class MultiSessionMemoryEvaluator:
         case: MultiSessionMemoryCase,
     ) -> dict[str, str]:
         key_to_id: dict[str, str] = {}
+        profiles = MemoryProfileRepository(repository.database_path)
         source_message_ids = {
             (session.session_id, message.turn_id): message.message_id
             for session in case.sessions
@@ -471,6 +491,12 @@ class MultiSessionMemoryEvaluator:
                 now_ms=memory.created_at_ms,
             )[0]
             key_to_id[memory.memory_key] = stored.memory_id
+            profiles.record_observation(
+                stored,
+                session_id=memory.source_session_id,
+                turn_id=memory.source_turn_id,
+                now_ms=memory.created_at_ms,
+            )
         return key_to_id
 
 
@@ -504,6 +530,52 @@ def compare_memory_retrievers(
             6,
         ),
     )
+
+
+def _source_memory_keys(
+    retrieved: list[RetrievedMemory],
+    id_to_key: dict[str, str],
+) -> list[str]:
+    """Resolve derived profiles back to their labelled source evidence.
+
+    Offline evaluation labels source memories, while a profile-first retriever
+    returns a derived profile ID. Scoring the profile as an unknown result would
+    hide its evidence coverage, so evaluation expands only its governed evidence
+    IDs. Production model context remains unchanged.
+    """
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in retrieved:
+        source_ids = (
+            [item.memory_id]
+            if item.memory_id in id_to_key
+            else item.evidence_memory_ids
+        )
+        for memory_id in source_ids:
+            key = id_to_key.get(memory_id)
+            if key is not None and key not in seen:
+                keys.append(key)
+                seen.add(key)
+    return keys
+
+
+def _source_relevance_scores(
+    retrieved: list[RetrievedMemory],
+    id_to_key: dict[str, str],
+) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for item in retrieved:
+        source_ids = (
+            [item.memory_id]
+            if item.memory_id in id_to_key
+            else item.evidence_memory_ids
+        )
+        for memory_id in source_ids:
+            key = id_to_key.get(memory_id)
+            if key is not None:
+                scores[key] = max(scores.get(key, 0.0), item.relevance_score)
+    return scores
 
 
 def _validate_case_references(case: MultiSessionMemoryCase) -> None:
@@ -544,19 +616,26 @@ def _ndcg_at_k(ranked_keys: list[str], grades: dict[str, int], *, k: int) -> flo
 
 
 def _answer_is_adherent(answer: str, expectation: AnswerExpectation) -> bool:
+    return not _answer_adherence_failures(answer, expectation)
+
+
+def _answer_adherence_failures(
+    answer: str,
+    expectation: AnswerExpectation,
+) -> list[str]:
     normalized = answer.casefold()
-    required_ok = all(
-        any(term.casefold() in normalized for term in group)
-        for group in expectation.required_term_groups
-    )
-    forbidden_ok = not any(
-        term.casefold() in normalized for term in expectation.forbidden_terms
-    )
-    length_ok = (
-        (expectation.min_chars is None or len(answer) >= expectation.min_chars)
-        and (expectation.max_chars is None or len(answer) <= expectation.max_chars)
-    )
-    return required_ok and forbidden_ok and length_ok
+    failures = [
+        f"MISSING_REQUIRED_TERM_GROUP_{index}"
+        for index, group in enumerate(expectation.required_term_groups)
+        if not any(term.casefold() in normalized for term in group)
+    ]
+    if any(term.casefold() in normalized for term in expectation.forbidden_terms):
+        failures.append("FORBIDDEN_TERM_PRESENT")
+    if expectation.min_chars is not None and len(answer) < expectation.min_chars:
+        failures.append("ANSWER_TOO_SHORT")
+    if expectation.max_chars is not None and len(answer) > expectation.max_chars:
+        failures.append("ANSWER_TOO_LONG")
+    return failures
 
 
 def _mean(values: list[float] | list[bool], *, default: float = 0.0) -> float:

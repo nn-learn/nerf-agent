@@ -136,6 +136,14 @@ Set-Location services\orchestrator
 
 关系图仍保持关闭。只有独立多跳集合达到至少 50 个案例，并在检索与最终回答两个阶段证明稳定收益后，才讨论 GraphRAG。当前实现参考了 [LongMemEval](https://arxiv.org/abs/2410.10813) 对跨会话、时间和更新能力的任务拆分，以及事件中心长期记忆的简化路线；[Zep 的时态知识图方法](https://arxiv.org/abs/2501.13956) 作为后续对照臂，而不是预设架构。后台整理而非阻塞实时回复的方向，也与 [Letta 的后台 memory processing](https://docs.letta.com/guides/agents/architectures/sleeptime) 一致。
 
+## V2.4：检索与最终回答分层评测
+
+V2.4 已加入 `flat evidence`、`profile-first`、`episode + freshness` 和原有 `BGE-M3 hybrid` 四臂矩阵，并修复了画像评测中的来源归因：画像 ID 会沿受治理的证据 ID 回溯到源记忆打分，画像文本和 episode summary 仍不能伪装成新的金标事实。
+
+当前 6 案例工程集上，真实 BGE-M3 的完整证据 Recall@5 为 `0.875`、Precision@5 为 `1.000`、nDCG@5 为 `0.947`、禁用记忆泄漏率为 `0.000`；它只是最佳离线检索臂。追加本地 `qwen3.6:latest` 最终回答评测后，答案契约遵循率为 `0.833`、错误记忆采纳率为 `0.000`。报告仍被门控为不可投产，因为数据非独立标注且只有 6 个留出查询。
+
+详细指标定义、命令、独立双人标注/仲裁流程和升级门槛见 [`MEMORY_V24_EVAL_PROTOCOL.md`](MEMORY_V24_EVAL_PROTOCOL.md)。
+
 ## 后续 2.x 路线
 
 - **V2.1（已实现，可选）**：规则锁定的本地 Qwen 结构化 claim 分组。模型只接收已确认 claim 和不透明 `memory_id`，只返回 ID 聚类，不能输出画像文本、主题、证据或用户属性。完整 ID 覆盖、唯一分配、subject、正反极性和时间边界由代码验证；任何超时、网络错误、格式错误或语义越界都会整批退回精确匹配。常见回答风格、语气、呼吸/冥想等已知语义仍完全由规则处理。该模式默认关闭，只运行在后台线程：
@@ -147,7 +155,7 @@ Set-Location services\orchestrator
   V2.1 使用现有 `PSYAVATAR_TEXT_MODEL`（默认 `qwen3.6:latest`）和 Ollama 地址，不更换用户原有模型。模型成功结果只缓存在进程内，失败结果不缓存，下一次重建可以重试。切换规范化器导致签名变化时，旧 active 画像先变为 `STALE`，新画像必须重新由用户确认。
 - **V2.2（已实现）**：双时间 observation、画像有效区间、明确变化提案、历史画像、用户确认/拒绝、证据撤回失效、独立 API/UI 和专项评测。
 - **V2.3（已实现）**：离线事件摘要索引、源证据展开、派生数据级联删除，以及只影响召回排序的 freshness/decay；GraphRAG 继续由独立评测门控。
-- **V2.4**：扩大独立金标集，比较 flat evidence、profile-first、BGE hybrid 和 reranker，评估检索与最终回答两个阶段。
+- **V2.4（工程基线已实现）**：四臂对照、完整证据 Recall/Precision/MRR/nDCG、回答证据充分率、可选本地 Qwen 最终回答、结构化失败诊断和独立标注门禁。下一步是扩展真实双人标注留出集，而不是继续在 6 个合成案例上调参。
 - **V2.5**：在隐私评审、人因评审和持出集门槛通过后，再考虑更长时间的真实用户试验。
 
 ### V2.1 当前工程验证

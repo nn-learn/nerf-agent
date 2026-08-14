@@ -4,6 +4,7 @@ from app.memory.multisession_evaluation import (
     AnswerExpectation,
     MemoryQualityGate,
     MultiSessionMemoryEvaluator,
+    _answer_adherence_failures,
     _answer_is_adherent,
     _ndcg_at_k,
     load_multisession_cases,
@@ -123,6 +124,21 @@ def test_ndcg_and_answer_contract_penalize_wrong_order_and_false_adoption() -> N
             forbidden_terms=["跑步"],
         ),
     )
+
+
+def test_answer_failure_reasons_are_structured_without_storing_answer_text() -> None:
+    assert _answer_adherence_failures(
+        "short forbidden",
+        AnswerExpectation(
+            required_term_groups=[["required"]],
+            forbidden_terms=["forbidden"],
+            min_chars=20,
+        ),
+    ) == [
+        "MISSING_REQUIRED_TERM_GROUP_0",
+        "FORBIDDEN_TERM_PRESENT",
+        "ANSWER_TOO_SHORT",
+    ]
 
 
 def test_embedding_retriever_rejects_dimension_drift(tmp_path: Path) -> None:
