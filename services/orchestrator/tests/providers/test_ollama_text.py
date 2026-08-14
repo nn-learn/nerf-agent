@@ -181,8 +181,8 @@ async def test_respond_rejects_model_changed_deterministic_risk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_respond_rejects_evidence_outside_reviewed_bundle() -> None:
-    """Catches citations invented outside the reviewed turn evidence."""
+async def test_respond_leaves_citation_authorization_to_host_control_plane() -> None:
+    """The model adapter parses output; the host-owned evidence gate authorizes it."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -196,24 +196,22 @@ async def test_respond_rejects_evidence_outside_reviewed_bundle() -> None:
     turn_id, token = await current_turn(registry)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = OllamaTextProvider(registry=registry, client=client)
-        with pytest.raises(
-            TextProviderResponseError,
-            match="outside the reviewed turn bundle",
-        ):
-            await provider.respond(
-                {
-                    "reviewed_evidence": [{"chunk_id": "chunk_1"}],
-                    "has_sufficient_evidence": True,
-                },
-                turn_id=turn_id,
-                cancel_token=token,
-                risk_level=RiskLevel.GREEN,
-            )
+        result = await provider.respond(
+            {
+                "reviewed_evidence": [{"chunk_id": "chunk_1"}],
+                "has_sufficient_evidence": True,
+            },
+            turn_id=turn_id,
+            cancel_token=token,
+            risk_level=RiskLevel.GREEN,
+        )
+
+    assert result.response.evidence_ids == ["chunk_unknown"]
 
 
 @pytest.mark.asyncio
-async def test_respond_rejects_citations_from_insufficient_bundle() -> None:
-    """Catches citations when retrieval did not meet the evidence threshold."""
+async def test_respond_does_not_silently_rewrite_model_citations() -> None:
+    """Citation failures remain observable to the downstream evidence gate."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -227,19 +225,17 @@ async def test_respond_rejects_citations_from_insufficient_bundle() -> None:
     turn_id, token = await current_turn(registry)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = OllamaTextProvider(registry=registry, client=client)
-        with pytest.raises(
-            TextProviderResponseError,
-            match="insufficient evidence bundle",
-        ):
-            await provider.respond(
-                {
-                    "reviewed_evidence": [{"chunk_id": "chunk_1"}],
-                    "has_sufficient_evidence": False,
-                },
-                turn_id=turn_id,
-                cancel_token=token,
-                risk_level=RiskLevel.GREEN,
-            )
+        result = await provider.respond(
+            {
+                "reviewed_evidence": [{"chunk_id": "chunk_1"}],
+                "has_sufficient_evidence": False,
+            },
+            turn_id=turn_id,
+            cancel_token=token,
+            risk_level=RiskLevel.GREEN,
+        )
+
+    assert result.response.evidence_ids == ["chunk_1"]
 
 
 @pytest.mark.asyncio

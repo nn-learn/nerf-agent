@@ -10,7 +10,6 @@ from app.providers.ollama_text import (
     OllamaTextProvider,
     OllamaTextResult,
 )
-from app.providers.qwen_text import TextProviderResponseError
 from app.rag.retriever import EvidenceBundle, EvidenceItem
 from app.safety.models import AgentResponse, RiskAssessment, RiskLevel
 
@@ -307,6 +306,7 @@ async def test_plan_crisis_uses_reviewed_handoff_without_calling_ollama() -> Non
         "support_mode": "handoff",
         "risk_level": RiskLevel.EMERGENCY,
         "evidence_ids": [],
+        "memory_ids": [],
         "visual_observation_ids": [],
         "action_proposals": [
             {
@@ -321,8 +321,8 @@ async def test_plan_crisis_uses_reviewed_handoff_without_calling_ollama() -> Non
 
 
 @pytest.mark.asyncio
-async def test_plan_reply_rejects_evidence_outside_retrieved_bundle() -> None:
-    """Catches an Ollama citation invented outside the reviewed retrieval result."""
+async def test_plan_reply_preserves_model_citations_for_host_evidence_gate() -> None:
+    """The provider remains a worker; graph policy owns citation authorization."""
     registry = CancellationRegistry()
     cancel_token = await registry.issue("turn_1")
 
@@ -351,17 +351,15 @@ async def test_plan_reply_rejects_evidence_outside_retrieved_bundle() -> None:
             reviewed_evidence_required=True,
         )
 
-        with pytest.raises(
-            TextProviderResponseError,
-            match="outside the reviewed turn bundle",
-        ):
-            await provider.plan_reply(
-                "最近压力很大",
-                risk(),
-                context,
-                turn_id="turn_1",
-                cancel_token=cancel_token,
-            )
+        plan = await provider.plan_reply(
+            "最近压力很大",
+            risk(),
+            context,
+            turn_id="turn_1",
+            cancel_token=cancel_token,
+        )
+
+    assert plan.response.evidence_ids == ["chunk_2"]
 
 
 @pytest.mark.asyncio

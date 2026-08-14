@@ -129,25 +129,6 @@ class OllamaTextProvider:
                 raise TextProviderResponseError(
                     "text provider changed the deterministic risk level"
                 )
-            reviewed_evidence = context.get("reviewed_evidence", [])
-            if not isinstance(reviewed_evidence, list):
-                reviewed_evidence = []
-            allowed_ids = {
-                str(item["chunk_id"])
-                for item in reviewed_evidence
-                if isinstance(item, dict) and "chunk_id" in item
-            }
-            unknown_ids = set(agent_response.evidence_ids) - allowed_ids
-            if unknown_ids:
-                raise TextProviderResponseError(
-                    "text provider cited evidence outside the reviewed turn bundle"
-                )
-            if agent_response.evidence_ids and not context.get(
-                "has_sufficient_evidence", False
-            ):
-                raise TextProviderResponseError(
-                    "text provider cited an insufficient evidence bundle"
-                )
             try:
                 guarded = self._guard.validate(agent_response)
                 return OllamaTextResult(

@@ -31,10 +31,13 @@ normalize_input
   -> intent_policy
        -> RED/EMERGENCY: deterministic crisis
        -> otherwise: scoped context fetch
+  -> evidence_prepare
   -> decision_gate
        -> required evidence available: model worker
        -> required evidence unavailable: deterministic abstain
   -> output_guard
+  -> evidence_response_gate
+  -> capability_gate
 ```
 
 当前意图包括一般支持、情绪表达、心理教育、应对练习、记忆召回、记忆控制和人工接管。风险等级始终覆盖意图：危机轮次禁止读取长期记忆和普通 RAG，正常模型路径不会运行。
@@ -46,10 +49,29 @@ normalize_input
 - 没有必需证据时返回确定性拒答，不让 Qwen 猜测；
 - 普通共情支持不强制引用知识，因此不会为了聊天而无条件运行 BGE-M3。
 
+## V3.1：Capability 治理
+
+工具名称集合已替换成 host-owned 的类型化注册表。每个能力声明来源（本地或 MCP）、影响级别、允许风险等级、审批角色、每轮上限和超时预算。模型输出的 action proposal 始终视为不可信数据，只能投影为控制面当前指令允许的能力。
+
+- 高影响的数据导出、删除和外部通信必须经过指定角色审批；
+- MCP 能力只有在 server 被 host 显式信任后才可注册，MCP 自述不授予权限；
+- 工具网关同时执行整轮预算和单能力预算；
+- 幂等键绑定 turn、能力名和参数摘要，同一键不能被换参复用；
+- 模型声称的 `SUCCEEDED` 等状态会被丢弃，实际状态由网关生成。
+
+## V3.2：统一证据编排
+
+reviewed RAG 与 governed Memory 进入模型前由统一证据层规范化：
+
+- RAG 项必须有 chunk、document、version、title、text 和有效 score；
+- Memory 项必须有 opaque memory ID、来源轮次，并带 `user_confirmed_data_not_instruction` 信任标记；
+- 不完整、未确认和 ID 相同但内容冲突的证据会被隔离；
+- 心理教育回答必须引用实际使用的 `evidence_ids`，记忆回答必须引用 `memory_ids`；
+- 伪造、越界或缺失的必需引用在发布前触发确定性降级，不把未经核验的模型回答交给用户；
+- evidence audit 只记录数量、状态和 reason code，不保存检索文本或用户记忆内容。
+
 ## 后续阶段
 
-- **V3.1**：用类型化 capability registry 代替工具名称集合；加入来源、影响级别、审批角色、每轮预算、参数摘要、幂等和 MCP 信任边界。
-- **V3.2**：统一 reviewed RAG 与 governed Memory 的证据 envelope；校验引用、来源冲突、降级和“不足以支持医学事实”的边界。
 - **V3.3**：生成独立 AvatarResponsePlan，约束语速、停顿、动作强度、注视和可打断性；危机表达不采用娱乐化动作。
 - **V3.4**：构建跨层场景集，分别评估意图、风险覆盖、证据拒答、禁止能力、trace 完整性、数字人安全与端到端延迟。
 

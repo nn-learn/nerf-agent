@@ -71,6 +71,48 @@ class RecordingAgentProvider:
         )
 
 
+class HallucinatingCitationProvider(RecordingAgentProvider):
+    async def load_context(
+        self,
+        transcript: str,
+        visual_summary: str,
+        risk: RiskAssessment,
+        *,
+        reviewed_evidence_required: bool,
+    ) -> dict[str, object]:
+        self.context_call = (transcript, visual_summary, risk.level)
+        assert reviewed_evidence_required is True
+        return {
+            "reviewed_evidence": [
+                {
+                    "chunk_id": "reviewed_chunk_1",
+                    "document_id": "document_1",
+                    "document_version": "1.0.0",
+                    "title": "经评审睡眠资料",
+                    "text": "稳定作息有助于睡眠健康。",
+                    "score": 0.93,
+                }
+            ],
+            "has_sufficient_evidence": True,
+        }
+
+    async def plan_reply(
+        self,
+        transcript: str,
+        risk: RiskAssessment,
+        context: dict[str, object],
+        *,
+        turn_id: str,
+        cancel_token: str,
+    ) -> AgentPlan:
+        _ = transcript, context
+        self.reply_call = (turn_id, cancel_token, risk.level)
+        response = agent_response(risk.level, support_mode="educate").model_copy(
+            update={"evidence_ids": ["invented_chunk"]}
+        )
+        return AgentPlan(response=response, provider_metrics={"provider": "test"})
+
+
 @pytest.mark.asyncio
 async def test_green_turn_fetches_context_before_reply() -> None:
     """Catches normal turns that bypass governed context or cancellation metadata."""
@@ -99,9 +141,11 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "final_risk",
         "intent_policy",
         "context_fetch",
+        "evidence_prepare",
         "decision_gate",
         "reply_planner",
         "output_guard",
+        "evidence_response_gate",
         "capability_gate",
         "publish_response",
         "propose_memory",
@@ -184,6 +228,34 @@ async def test_memory_question_without_confirmed_memory_uses_deterministic_gate(
         "provider": "deterministic_evidence_gate"
     }
     assert "不会猜测" in result["response"].spoken_text
+
+
+@pytest.mark.asyncio
+async def test_graph_replaces_hallucinated_citation_before_publish() -> None:
+    provider = HallucinatingCitationProvider()
+    graph = build_graph(
+        GraphDependencies(
+            agent_provider=provider,
+            output_guard=GraphDependencies.for_mock().output_guard,
+        )
+    )
+
+    result = await graph.ainvoke(
+        {
+            "transcript": "什么是睡眠卫生？",
+            "visual_summary": "",
+            "turn_id": "turn_1",
+            "cancel_token": "ct_1",
+            "visited": [],
+        }
+    )
+
+    assert "evidence_response_gate" in result["visited"]
+    assert result["response"].evidence_ids == []
+    assert "无法核验" in result["response"].spoken_text
+    assert result["evidence_response_audit"].reason_codes == [
+        "UNKNOWN_REVIEWED_CITATION"
+    ]
 
 
 @pytest.mark.asyncio

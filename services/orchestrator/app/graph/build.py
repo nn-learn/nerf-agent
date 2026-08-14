@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.actions import CapabilityProposalGate
 from app.agent.control import AgentControlPlane
+from app.agent.evidence import EvidenceOrchestrator
 from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
 from app.graph.state import AgentState
 from app.providers.mock import MockAgentProvider
@@ -28,6 +29,9 @@ class GraphDependencies:
     control_plane: AgentControlPlane = field(default_factory=AgentControlPlane)
     capability_gate: CapabilityProposalGate = field(
         default_factory=CapabilityProposalGate
+    )
+    evidence_orchestrator: EvidenceOrchestrator = field(
+        default_factory=EvidenceOrchestrator
     )
 
     @classmethod
@@ -107,6 +111,17 @@ def build_graph(
         return {
             "context": context,
             "visited": ["context_fetch"],
+        }
+
+    def evidence_prepare(state: AgentState) -> dict[str, object]:
+        context, audit = dependencies.evidence_orchestrator.prepare(
+            state["context"],
+            state["agent_directive"],
+        )
+        return {
+            "context": context,
+            "evidence_context_audit": audit,
+            "visited": ["evidence_prepare"],
         }
 
     def decision_gate(state: AgentState) -> dict[str, object]:
@@ -215,6 +230,18 @@ def build_graph(
             "visited": ["capability_gate"],
         }
 
+    def evidence_response_gate(state: AgentState) -> dict[str, object]:
+        response, audit = dependencies.evidence_orchestrator.authorize_response(
+            state["response"],
+            state.get("context", {}),
+            state["agent_directive"],
+        )
+        return {
+            "response": response,
+            "evidence_response_audit": audit,
+            "visited": ["evidence_response_gate"],
+        }
+
     def publish_response(state: AgentState) -> dict[str, object]:
         _ = state
         return {"visited": ["publish_response"]}
@@ -228,11 +255,13 @@ def build_graph(
     builder.add_node("final_risk", final_risk)
     builder.add_node("intent_policy", intent_policy)
     builder.add_node("context_fetch", context_fetch)
+    builder.add_node("evidence_prepare", evidence_prepare)
     builder.add_node("decision_gate", decision_gate)
     builder.add_node("evidence_fallback", evidence_fallback)
     builder.add_node("reply_planner", reply_planner)
     builder.add_node("crisis_policy", crisis_policy)
     builder.add_node("output_guard", output_guard)
+    builder.add_node("evidence_response_gate", evidence_response_gate)
     builder.add_node("capability_gate", capability_gate)
     builder.add_node("publish_response", publish_response)
     builder.add_node("propose_memory", propose_memory)
@@ -241,12 +270,14 @@ def build_graph(
     builder.add_edge("partial_risk", "final_risk")
     builder.add_edge("final_risk", "intent_policy")
     builder.add_conditional_edges("intent_policy", route_after_intent)
-    builder.add_edge("context_fetch", "decision_gate")
+    builder.add_edge("context_fetch", "evidence_prepare")
+    builder.add_edge("evidence_prepare", "decision_gate")
     builder.add_conditional_edges("decision_gate", route_after_decision)
     builder.add_edge("reply_planner", "output_guard")
     builder.add_edge("evidence_fallback", "output_guard")
     builder.add_edge("crisis_policy", "output_guard")
-    builder.add_edge("output_guard", "capability_gate")
+    builder.add_edge("output_guard", "evidence_response_gate")
+    builder.add_edge("evidence_response_gate", "capability_gate")
     builder.add_edge("capability_gate", "publish_response")
     builder.add_edge("publish_response", "propose_memory")
     builder.add_edge("propose_memory", END)

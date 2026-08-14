@@ -24,6 +24,7 @@ class AgentResponse(BaseModel):
     support_mode: Literal["listen", "educate", "exercise", "handoff"]
     risk_level: RiskLevel
     evidence_ids: list[str]
+    memory_ids: list[str] = Field(default_factory=list)
     visual_observation_ids: list[str]
     action_proposals: list[dict[str, object]]
     memory_candidates: list[dict[str, object]]
