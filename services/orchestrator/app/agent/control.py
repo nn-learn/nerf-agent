@@ -216,8 +216,6 @@ class AgentControlPlane:
             and response.support_mode != "handoff"
         ):
             raise AgentPolicyViolation("crisis response must use handoff support mode")
-        if len(response.action_proposals) > directive.max_tool_proposals:
-            raise AgentPolicyViolation("response exceeded tool proposal budget")
         return response
 
     def _normal_directive(

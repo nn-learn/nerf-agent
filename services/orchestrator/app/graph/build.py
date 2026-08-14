@@ -5,6 +5,7 @@ from typing import Any, Literal
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.actions import CapabilityProposalGate
 from app.agent.control import AgentControlPlane
 from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
 from app.graph.state import AgentState
@@ -25,6 +26,9 @@ class GraphDependencies:
     output_guard: OutputGuard
     memory_context_loader: MemoryContextLoader | None = None
     control_plane: AgentControlPlane = field(default_factory=AgentControlPlane)
+    capability_gate: CapabilityProposalGate = field(
+        default_factory=CapabilityProposalGate
+    )
 
     @classmethod
     def for_mock(cls) -> "GraphDependencies":
@@ -200,6 +204,17 @@ def build_graph(
             "visited": ["output_guard"],
         }
 
+    def capability_gate(state: AgentState) -> dict[str, object]:
+        response, audit = dependencies.capability_gate.apply(
+            state["response"],
+            state["agent_directive"],
+        )
+        return {
+            "response": response,
+            "capability_audit": audit,
+            "visited": ["capability_gate"],
+        }
+
     def publish_response(state: AgentState) -> dict[str, object]:
         _ = state
         return {"visited": ["publish_response"]}
@@ -218,6 +233,7 @@ def build_graph(
     builder.add_node("reply_planner", reply_planner)
     builder.add_node("crisis_policy", crisis_policy)
     builder.add_node("output_guard", output_guard)
+    builder.add_node("capability_gate", capability_gate)
     builder.add_node("publish_response", publish_response)
     builder.add_node("propose_memory", propose_memory)
     builder.add_edge(START, "normalize_input")
@@ -230,7 +246,8 @@ def build_graph(
     builder.add_edge("reply_planner", "output_guard")
     builder.add_edge("evidence_fallback", "output_guard")
     builder.add_edge("crisis_policy", "output_guard")
-    builder.add_edge("output_guard", "publish_response")
+    builder.add_edge("output_guard", "capability_gate")
+    builder.add_edge("capability_gate", "publish_response")
     builder.add_edge("publish_response", "propose_memory")
     builder.add_edge("propose_memory", END)
     return builder.compile(checkpointer=checkpointer)
