@@ -17,6 +17,12 @@ from app.api.realtime import create_realtime_router
 from app.api.sessions import create_sessions_router
 from app.events.store import EventStore
 from app.memory.consolidation import MemoryConsolidator, MemoryProfileRepository
+from app.memory.episodes import (
+    EpisodeAugmentedMemoryRetriever,
+    FreshnessAwareMemoryRetriever,
+    MemoryEpisodeRepository,
+    MemoryRetrieverPort,
+)
 from app.memory.identity import MemorySubjectStore
 from app.memory.models import MemoryRecall
 from app.memory.pipeline import MemoryPipeline
@@ -127,10 +133,28 @@ def create_app(
         memory_profiles,
         normalizer=memory_claim_normalizer,
     )
-    governed_memory_retriever = LayeredMemoryRetriever(
+    layered_memory_retriever = LayeredMemoryRetriever(
         GovernedMemoryRetriever(memory_repository),
         GovernedProfileRetriever(memory_profiles),
     )
+    memory_episodes = MemoryEpisodeRepository(
+        current.event_database_path,
+        max_members=current.memory_episode_max_members,
+        max_summary_chars=current.memory_episode_max_chars,
+        time_gap_ms=current.memory_episode_time_gap_minutes * 60 * 1000,
+    )
+    governed_memory_retriever: MemoryRetrieverPort = layered_memory_retriever
+    if current.memory_episode_summary_enabled:
+        governed_memory_retriever = EpisodeAugmentedMemoryRetriever(
+            governed_memory_retriever,
+            episodes=memory_episodes,
+            memories=memory_repository,
+        )
+    if current.memory_freshness_rerank_enabled:
+        governed_memory_retriever = FreshnessAwareMemoryRetriever(
+            governed_memory_retriever,
+            minimum_factor=current.memory_freshness_minimum_factor,
+        )
     memory_shadow_repository = MemoryShadowRepository(
         current.event_database_path,
         retention_days=current.memory_shadow_retention_days,
@@ -175,6 +199,7 @@ def create_app(
         repository=memory_repository,
         profiles=memory_profiles,
         consolidator=memory_consolidator,
+        episodes=memory_episodes,
     )
     memory_worker = MemoryIngestionWorker(
         service=memory_ingestion,
@@ -242,6 +267,7 @@ def create_app(
     app.state.memory_worker = memory_worker
     app.state.memory_profiles = memory_profiles
     app.state.memory_consolidator = memory_consolidator
+    app.state.memory_episodes = memory_episodes
     app.state.memory_claim_normalizer = memory_claim_normalizer
     app.state.memory_shadow_repository = memory_shadow_repository
     app.state.memory_shadow_runner = memory_shadow_runner
@@ -289,6 +315,7 @@ def create_app(
             worker=memory_worker,
             profiles=memory_profiles,
             consolidator=memory_consolidator,
+            episodes=memory_episodes,
             shadow_repository=memory_shadow_repository,
             shadow_runner=memory_shadow_runner,
             shadow_policy_version=current.memory_shadow_policy_version,

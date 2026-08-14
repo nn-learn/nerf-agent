@@ -230,6 +230,41 @@ CREATE TABLE IF NOT EXISTS memory_profile_changes (
 CREATE INDEX IF NOT EXISTS idx_memory_changes_user_state
     ON memory_profile_changes(user_id, state, updated_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS memory_episode_summaries (
+    summary_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    purpose_scope TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    ended_at_ms INTEGER NOT NULL,
+    contains_sensitive_content INTEGER NOT NULL CHECK (
+        contains_sensitive_content IN (0, 1)
+    ),
+    source_digest TEXT NOT NULL,
+    summary_version TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    UNIQUE(user_id, session_id, purpose_scope, source_digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_episode_summaries_user_time
+    ON memory_episode_summaries(user_id, purpose_scope, ended_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS memory_episode_members (
+    summary_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY(summary_id, memory_id),
+    FOREIGN KEY(summary_id) REFERENCES memory_episode_summaries(summary_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(memory_id) REFERENCES memory_items(memory_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_episode_members_memory
+    ON memory_episode_members(memory_id, summary_id);
+
 CREATE TABLE IF NOT EXISTS memory_research_consents (
     user_id TEXT PRIMARY KEY,
     granted INTEGER NOT NULL CHECK (granted IN (0, 1)),

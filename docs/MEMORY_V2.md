@@ -107,6 +107,35 @@ Set-Location services\orchestrator
 
 覆盖明确变化、无锚点相反说法、纯历史说法、同义稳定说法、旧值先出现的变化句、撤回变更证据，以及 `[valid_from, valid_to)` 边界。该小型合成集只证明状态机回归，不证明开放域时态理解准确率；上线前仍需真实中文口语金标集，并优先报告 false change rate。
 
+## V2.3：受治理的事件记忆索引
+
+V2.3 在 evidence/profile 两层之上增加了一个**可重建的离线检索索引**，而不是增加一个可以绕过用户控制的新记忆层：
+
+```text
+ACTIVE 且完整性检查通过的源记忆
+    -> 按 session、有效时间间隔、成员数和字符数进行有界分组
+    -> 生成确定性的 episode summary（后台链路）
+    -> summary 只用于定位候选 source memory_id
+    -> 再次读取当前仍为 ACTIVE 的源记忆
+    -> 只有源记忆文本能够进入模型上下文
+```
+
+单个事件最多包含 6 条源记忆、800 个字符，默认按 30 分钟时间间隔切断。编辑、撤回或永久删除任一源记忆时，派生摘要会立即失效或物理删除；后台重建使用 `secure_delete`，旧摘要不会作为可召回文本残留。摘要不在记忆中心展示，因为它不是用户需要单独确认的新事实，用户仍通过源记忆控制其内容与生命周期。
+
+freshness/decay 仅对已经通过治理门的候选做轻量重排：边界和偏好不衰减，事实、目标和应对方式采用不同半衰期，最低保留 0.90 的排序系数。时间不会自动撤回、隐藏或删除一条用户确认的记忆，也不会让失效、跨用户或未确认内容重新进入候选集。
+
+运行专项评测：
+
+```powershell
+Set-Location services\orchestrator
+.\.venv\Scripts\python.exe -m app.memory.run_episode_evaluation `
+  ..\..\evals\memory_v23_cases.jsonl
+```
+
+当前 4 个确定性工程用例的结果为：flat multi-hop Recall@K `0.500`，episode Recall@K `0.875`，episode Precision@K `1.000`，摘要进入模型上下文的泄漏率 `0.000`。跨 episode 案例没有收益，这正是当前边界；该小型合成集只验证索引链路和治理不变量，不代表开放域效果。
+
+关系图仍保持关闭。只有独立多跳集合达到至少 50 个案例，并在检索与最终回答两个阶段证明稳定收益后，才讨论 GraphRAG。当前实现参考了 [LongMemEval](https://arxiv.org/abs/2410.10813) 对跨会话、时间和更新能力的任务拆分，以及事件中心长期记忆的简化路线；[Zep 的时态知识图方法](https://arxiv.org/abs/2501.13956) 作为后续对照臂，而不是预设架构。后台整理而非阻塞实时回复的方向，也与 [Letta 的后台 memory processing](https://docs.letta.com/guides/agents/architectures/sleeptime) 一致。
+
 ## 后续 2.x 路线
 
 - **V2.1（已实现，可选）**：规则锁定的本地 Qwen 结构化 claim 分组。模型只接收已确认 claim 和不透明 `memory_id`，只返回 ID 聚类，不能输出画像文本、主题、证据或用户属性。完整 ID 覆盖、唯一分配、subject、正反极性和时间边界由代码验证；任何超时、网络错误、格式错误或语义越界都会整批退回精确匹配。常见回答风格、语气、呼吸/冥想等已知语义仍完全由规则处理。该模式默认关闭，只运行在后台线程：
@@ -117,7 +146,7 @@ Set-Location services\orchestrator
 
   V2.1 使用现有 `PSYAVATAR_TEXT_MODEL`（默认 `qwen3.6:latest`）和 Ollama 地址，不更换用户原有模型。模型成功结果只缓存在进程内，失败结果不缓存，下一次重建可以重试。切换规范化器导致签名变化时，旧 active 画像先变为 `STALE`，新画像必须重新由用户确认。
 - **V2.2（已实现）**：双时间 observation、画像有效区间、明确变化提案、历史画像、用户确认/拒绝、证据撤回失效、独立 API/UI 和专项评测。
-- **V2.3**：离线构建事件摘要，并评估只影响召回排序的 freshness/decay；只有明确的多跳评测证明收益后才加入图关系，不为了使用 GraphRAG 而建图。
+- **V2.3（已实现）**：离线事件摘要索引、源证据展开、派生数据级联删除，以及只影响召回排序的 freshness/decay；GraphRAG 继续由独立评测门控。
 - **V2.4**：扩大独立金标集，比较 flat evidence、profile-first、BGE hybrid 和 reranker，评估检索与最终回答两个阶段。
 - **V2.5**：在隐私评审、人因评审和持出集门槛通过后，再考虑更长时间的真实用户试验。
 

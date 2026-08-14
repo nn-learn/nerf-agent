@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.events.store import EventStore
 from app.memory.consolidation import MemoryConsolidator, MemoryProfileRepository
+from app.memory.episodes import MemoryEpisodeRepository
 from app.memory.extraction import (
     contains_sensitive_memory_content,
     infer_memory_aspect,
@@ -180,6 +181,7 @@ def create_memory_router(
     worker: MemoryIngestionWorker,
     profiles: MemoryProfileRepository,
     consolidator: MemoryConsolidator,
+    episodes: MemoryEpisodeRepository,
     shadow_repository: MemoryShadowRepository,
     shadow_runner: MemoryShadowRunner | None,
     shadow_policy_version: str,
@@ -563,6 +565,12 @@ def create_memory_router(
                     resolve_source_session=True,
                 )
                 await asyncio.to_thread(consolidator.rebuild_user, user_id)
+                await asyncio.to_thread(
+                    episodes.rebuild_for_memory,
+                    user_id=user_id,
+                    memory_id=item.memory_id,
+                    memory_repository=repository,
+                )
                 event_type = "memory.confirmed"
             else:
                 item = repository.get(memory_id, user_id=user_id)
@@ -636,6 +644,13 @@ def create_memory_router(
                 await asyncio.to_thread(
                     consolidator.rebuild_user,
                     user_id,
+                    now_ms=now_ms,
+                )
+                await asyncio.to_thread(
+                    episodes.rebuild_for_memory,
+                    user_id=user_id,
+                    memory_id=item.memory_id,
+                    memory_repository=repository,
                     now_ms=now_ms,
                 )
         except KeyError as error:

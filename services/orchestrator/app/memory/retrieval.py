@@ -29,6 +29,7 @@ class RetrievedMemory(BaseModel):
     source_turn_id: str
     source_message_ids: list[str]
     evidence_memory_ids: list[str] = Field(default_factory=list)
+    valid_at_ms: int | None = Field(default=None, ge=0)
 
 
 class MemoryEmbeddingProvider(Protocol):
@@ -129,6 +130,11 @@ class GovernedMemoryRetriever:
                 reason_codes=reasons,
                 source_turn_id=item.candidate.source_turn_id,
                 source_message_ids=item.candidate.source_message_ids,
+                valid_at_ms=(
+                    item.candidate.valid_from_ms
+                    if item.candidate.valid_from_ms is not None
+                    else item.created_at_ms
+                ),
             )
             for score, lexical, reasons, item in ranked[:k]
         ]
@@ -238,6 +244,11 @@ class GovernedProfileRetriever:
                 evidence_memory_ids=[
                     evidence.memory_id for evidence in profile.evidence
                 ],
+                valid_at_ms=(
+                    profile.valid_from_ms
+                    if profile.valid_from_ms is not None
+                    else profile.updated_at_ms
+                ),
             )
             for score, relevance, profile in ranked[:k]
         ]
@@ -389,6 +400,11 @@ class GovernedEmbeddingMemoryRetriever:
                 reason_codes=reasons,
                 source_turn_id=item.candidate.source_turn_id,
                 source_message_ids=item.candidate.source_message_ids,
+                valid_at_ms=(
+                    item.candidate.valid_from_ms
+                    if item.candidate.valid_from_ms is not None
+                    else item.created_at_ms
+                ),
             )
             for score, relevance, reasons, item in ranked[:k]
         ]

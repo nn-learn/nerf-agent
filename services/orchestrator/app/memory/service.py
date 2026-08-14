@@ -1,4 +1,5 @@
 from app.memory.consolidation import MemoryConsolidator, MemoryProfileRepository
+from app.memory.episodes import MemoryEpisodeRepository
 from app.memory.pipeline import MemoryPipeline, MemoryPipelineResult
 from app.memory.reader import EventMessageReader
 from app.memory.repository import MemoryRepository
@@ -15,12 +16,14 @@ class MemoryIngestionService:
         repository: MemoryRepository,
         profiles: MemoryProfileRepository | None = None,
         consolidator: MemoryConsolidator | None = None,
+        episodes: MemoryEpisodeRepository | None = None,
     ) -> None:
         self._reader = reader
         self._pipeline = pipeline
         self._repository = repository
         self._profiles = profiles
         self._consolidator = consolidator
+        self._episodes = episodes
 
     def ingest_session(
         self,
@@ -53,6 +56,13 @@ class MemoryIngestionService:
                 )
         if self._consolidator is not None:
             self._consolidator.rebuild_user(user_id, now_ms=now_ms)
+        if self._episodes is not None:
+            self._episodes.rebuild_session(
+                user_id=user_id,
+                session_id=session_id,
+                memory_repository=self._repository,
+                now_ms=now_ms,
+            )
         if messages:
             self._repository.update_ingestion_cursor(
                 user_id=user_id,

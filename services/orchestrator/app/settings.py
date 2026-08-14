@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     memory_claim_ollama_num_predict: int = Field(default=800, ge=64, le=2048)
     memory_claim_ollama_cache_entries: int = Field(default=256, ge=0, le=10_000)
     memory_claim_ollama_batch_claims: int = Field(default=32, ge=2, le=64)
+    memory_episode_summary_enabled: bool = True
+    memory_episode_max_members: int = Field(default=6, ge=2, le=32)
+    memory_episode_max_chars: int = Field(default=800, ge=200, le=4000)
+    memory_episode_time_gap_minutes: int = Field(default=30, ge=5, le=1440)
+    memory_freshness_rerank_enabled: bool = True
+    memory_freshness_minimum_factor: float = Field(default=0.90, gt=0, le=1)
     memory_shadow_enabled: bool = False
     memory_shadow_policy_version: str = "memory-shadow-research-v1"
     memory_shadow_strategy_version: str = "hybrid-bge-m3-v1.6@0.50"

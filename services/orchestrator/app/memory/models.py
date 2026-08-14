@@ -192,6 +192,24 @@ class MemoryChange(BaseModel):
     proposed_profile: MemoryProfile
 
 
+class MemoryEpisodeSummary(BaseModel):
+    """A bounded retrieval index over governed memories from one episode."""
+
+    summary_id: str
+    user_id: str
+    session_id: str
+    text: str
+    purpose_scope: str = "personalization"
+    member_memory_ids: list[str] = Field(min_length=1)
+    started_at_ms: int = Field(ge=0)
+    ended_at_ms: int = Field(ge=0)
+    contains_sensitive_content: bool
+    source_digest: str
+    summary_version: str
+    created_at_ms: int = Field(ge=0)
+    updated_at_ms: int = Field(ge=0)
+
+
 class MemoryRecall(BaseModel):
     memory_id: str
     session_id: str

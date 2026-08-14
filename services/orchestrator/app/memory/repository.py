@@ -334,6 +334,10 @@ class MemoryRepository:
                 )
             deleted = cursor.rowcount > 0
             if deleted:
+                self._delete_derived_episode_summaries(
+                    connection,
+                    memory_id=memory_id,
+                )
                 profile_rows = connection.execute(
                     """
                     SELECT DISTINCT profile_id FROM memory_profile_evidence
@@ -593,6 +597,10 @@ class MemoryRepository:
         now_ms: int,
     ) -> None:
         """Fail closed when source evidence is revoked or materially edited."""
+        MemoryRepository._delete_derived_episode_summaries(
+            connection,
+            memory_id=memory_id,
+        )
         profile_rows = connection.execute(
             """
             SELECT DISTINCT profile_id FROM memory_profile_evidence
@@ -627,6 +635,31 @@ class MemoryRepository:
                 ) AND state = 'OPEN'
                 """,
                 (now_ms, profile_id),
+            )
+
+    @staticmethod
+    def _delete_derived_episode_summaries(
+        connection: sqlite3.Connection,
+        *,
+        memory_id: str,
+    ) -> None:
+        """Physically remove a derived index before source text changes."""
+        connection.execute("PRAGMA secure_delete = ON")
+        rows = connection.execute(
+            """
+            SELECT DISTINCT summary_id FROM memory_episode_members
+            WHERE memory_id = ?
+            """,
+            (memory_id,),
+        ).fetchall()
+        for (summary_id,) in rows:
+            connection.execute(
+                "DELETE FROM memory_episode_members WHERE summary_id = ?",
+                (summary_id,),
+            )
+            connection.execute(
+                "DELETE FROM memory_episode_summaries WHERE summary_id = ?",
+                (summary_id,),
             )
 
     def record_retrievals(
