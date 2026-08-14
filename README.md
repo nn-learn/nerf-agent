@@ -115,6 +115,10 @@ V2.4.1 的 10 用户/50 查询工程压力门进一步验证当前事实、过�
 
 V2.5 已补齐发布治理：物理删除残留探针会扫描 SQLite/WAL/SHM；隐私审计覆盖跨用户派生关系、孤儿引用、失效 episode/profile 证据和原始媒体；人工评审包强制先脱敏，并要求每条回答同时接受独立的临床与隐私角色评审。空记忆回答现在走确定性拒答，不再让 Qwen 随机猜测措辞。真实 BGE-M3 + `qwen3.6:latest` 的统一发布门当前返回 `ENGINEERING_BASELINE_COMPLETE`，但由于独立金标、真实人工评审和外部签字尚未完成，`production_ready` 保持 `false`。完整边界和命令见 [`docs/MEMORY_V2_RELEASE.md`](docs/MEMORY_V2_RELEASE.md)。
 
+## Agent V3 安全决策层
+
+V3.0 已把确定性 Control Plane 接入 LangGraph：风险覆盖意图，意图决定 reviewed RAG、governed Memory 与 capability 的访问范围；需要知识或记忆但证据不足时直接确定性拒答。普通情绪支持不再无条件运行 BGE-M3，危机轮次继续完全绕过普通检索和正常 LLM。架构、reason code 与 V3.1–V3.4 路线见 [`docs/AGENT_V3.md`](docs/AGENT_V3.md)。
+
 ## 最快 mock 演示（无 GPU）
 
 首次准备：

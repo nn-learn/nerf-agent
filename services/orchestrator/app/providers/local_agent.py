@@ -34,11 +34,21 @@ class LocalAgentProvider:
         transcript: str,
         visual_summary: str,
         risk: RiskAssessment,
+        *,
+        reviewed_evidence_required: bool,
     ) -> dict[str, object]:
-        bundle = await self._retriever.retrieve(
-            transcript,
-            risk_level=risk.level,
-            k=self._top_k,
+        bundle = (
+            await self._retriever.retrieve(
+                transcript,
+                risk_level=risk.level,
+                k=self._top_k,
+            )
+            if reviewed_evidence_required
+            else EvidenceBundle(
+                query=transcript,
+                items=[],
+                has_sufficient_evidence=False,
+            )
         )
         return {
             "transcript": transcript,

@@ -33,9 +33,15 @@ class RecordingAgentProvider:
         transcript: str,
         visual_summary: str,
         risk: RiskAssessment,
+        *,
+        reviewed_evidence_required: bool,
     ) -> dict[str, object]:
+        _ = reviewed_evidence_required
         self.context_call = (transcript, visual_summary, risk.level)
-        return {"reviewed_evidence": []}
+        return {
+            "reviewed_evidence": [],
+            "has_sufficient_evidence": False,
+        }
 
     async def plan_reply(
         self,
@@ -91,7 +97,9 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "normalize_input",
         "partial_risk",
         "final_risk",
+        "intent_policy",
         "context_fetch",
+        "decision_gate",
         "reply_planner",
         "output_guard",
         "publish_response",
@@ -126,6 +134,7 @@ async def test_emergency_turn_bypasses_normal_context_and_uses_crisis_policy() -
 
     assert result["risk"].level is RiskLevel.EMERGENCY
     assert "crisis_policy" in result["visited"]
+    assert "intent_policy" in result["visited"]
     assert "context_fetch" not in result["visited"]
     assert "reply_planner" not in result["visited"]
     assert provider.context_call is None
@@ -133,6 +142,47 @@ async def test_emergency_turn_bypasses_normal_context_and_uses_crisis_policy() -
     assert provider.crisis_call == ("我现在正在伤害自己", RiskLevel.EMERGENCY)
     assert result["response"].support_mode == "handoff"
     assert result["provider_metrics"] == {"provider": "deterministic_crisis"}
+    assert result["agent_trace"].reason_codes[0] == "RISK_OVERRIDE"
+
+
+@pytest.mark.asyncio
+async def test_memory_question_without_confirmed_memory_uses_deterministic_gate() -> None:
+    provider = RecordingAgentProvider()
+
+    async def empty_memory(
+        session_id: str,
+        turn_id: str,
+        query: str,
+    ) -> list[dict[str, object]]:
+        _ = session_id, turn_id, query
+        return []
+
+    graph = build_graph(
+        GraphDependencies(
+            agent_provider=provider,
+            output_guard=GraphDependencies.for_mock().output_guard,
+            memory_context_loader=empty_memory,
+        )
+    )
+
+    result = await graph.ainvoke(
+        {
+            "session_id": "session_1",
+            "transcript": "你还记得我之前说过什么吗？",
+            "visual_summary": "",
+            "turn_id": "turn_1",
+            "cancel_token": "ct_1",
+            "visited": [],
+        }
+    )
+
+    assert "evidence_fallback" in result["visited"]
+    assert "reply_planner" not in result["visited"]
+    assert provider.reply_call is None
+    assert result["provider_metrics"] == {
+        "provider": "deterministic_evidence_gate"
+    }
+    assert "不会猜测" in result["response"].spoken_text
 
 
 @pytest.mark.asyncio

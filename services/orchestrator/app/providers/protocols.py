@@ -18,6 +18,8 @@ class AgentProvider(Protocol):
         transcript: str,
         visual_summary: str,
         risk: RiskAssessment,
+        *,
+        reviewed_evidence_required: bool,
     ) -> dict[str, object]:
         raise NotImplementedError
 

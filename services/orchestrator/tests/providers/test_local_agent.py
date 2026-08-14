@@ -121,6 +121,7 @@ async def test_load_context_serializes_only_reviewed_evidence() -> None:
         "最近压力很大",
         "用户看起来有些疲惫",
         risk(),
+        reviewed_evidence_required=True,
     )
 
     assert retriever.call == ("最近压力很大", RiskLevel.GREEN, 3)
@@ -166,10 +167,50 @@ async def test_load_context_hides_chunks_from_insufficient_bundle() -> None:
     )
     provider = LocalAgentProvider(text_provider=text, retriever=retriever)
 
-    context = await provider.load_context("最近压力很大", "", risk())
+    context = await provider.load_context(
+        "最近压力很大",
+        "",
+        risk(),
+        reviewed_evidence_required=True,
+    )
 
     assert context["reviewed_evidence"] == []
     assert context["has_sufficient_evidence"] is False
+
+
+@pytest.mark.asyncio
+async def test_load_context_skips_rag_when_control_plane_does_not_require_it() -> None:
+    retriever = RecordingRetriever(
+        EvidenceBundle(
+            query="最近压力很大",
+            items=[reviewed_item()],
+            has_sufficient_evidence=True,
+        )
+    )
+    provider = LocalAgentProvider(
+        text_provider=RecordingTextProvider(
+            OllamaTextResult(
+                response=normal_response(),
+                metrics=OllamaMetrics(
+                    total_duration_ns=0,
+                    load_duration_ns=0,
+                    prompt_eval_count=0,
+                    eval_count=0,
+                ),
+            )
+        ),
+        retriever=retriever,
+    )
+
+    context = await provider.load_context(
+        "最近压力很大",
+        "",
+        risk(),
+        reviewed_evidence_required=False,
+    )
+
+    assert retriever.call is None
+    assert context["reviewed_evidence"] == []
 
 
 @pytest.mark.asyncio
@@ -303,7 +344,12 @@ async def test_plan_reply_rejects_evidence_outside_retrieved_bundle() -> None:
                 )
             ),
         )
-        context = await provider.load_context("最近压力很大", "", risk())
+        context = await provider.load_context(
+            "最近压力很大",
+            "",
+            risk(),
+            reviewed_evidence_required=True,
+        )
 
         with pytest.raises(
             TextProviderResponseError,
@@ -341,7 +387,12 @@ async def test_plan_reply_allows_no_citations_when_no_evidence_exists() -> None:
                 )
             ),
         )
-        context = await provider.load_context("最近压力很大", "", risk())
+        context = await provider.load_context(
+            "最近压力很大",
+            "",
+            risk(),
+            reviewed_evidence_required=True,
+        )
 
         plan = await provider.plan_reply(
             "最近压力很大",

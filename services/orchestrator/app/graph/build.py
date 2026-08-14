@@ -1,14 +1,16 @@
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.control import AgentControlPlane
+from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
 from app.graph.state import AgentState
 from app.providers.mock import MockAgentProvider
 from app.providers.protocols import AgentProvider
-from app.safety.models import RiskLevel
+from app.safety.models import AgentResponse
 from app.safety.output_guard import OutputGuard
 from app.safety.rules import assess_risk
 
@@ -22,6 +24,7 @@ class GraphDependencies:
     agent_provider: AgentProvider
     output_guard: OutputGuard
     memory_context_loader: MemoryContextLoader | None = None
+    control_plane: AgentControlPlane = field(default_factory=AgentControlPlane)
 
     @classmethod
     def for_mock(cls) -> "GraphDependencies":
@@ -48,15 +51,40 @@ def build_graph(
             "visited": ["final_risk"],
         }
 
+    def intent_policy(state: AgentState) -> dict[str, object]:
+        intent = dependencies.control_plane.classify(state["transcript"])
+        directive = dependencies.control_plane.draft(
+            state["transcript"],
+            state["risk"],
+        )
+        result: dict[str, object] = {
+            "intent": intent,
+            "agent_directive": directive,
+            "visited": ["intent_policy"],
+        }
+        if directive.response_strategy is ResponseStrategy.DETERMINISTIC_CRISIS:
+            _, trace = dependencies.control_plane.finalize(directive, {})
+            result["agent_trace"] = trace
+        return result
+
     async def context_fetch(state: AgentState) -> dict[str, object]:
         context = await dependencies.agent_provider.load_context(
             state["transcript"],
             state.get("visual_summary", ""),
             state["risk"],
+            reviewed_evidence_required=(
+                state["agent_directive"].evidence_requirement
+                is EvidenceRequirement.REVIEWED_KNOWLEDGE
+            ),
         )
         loader = dependencies.memory_context_loader
         session_id = state.get("session_id")
-        if loader is not None and session_id is not None:
+        if (
+            loader is not None
+            and session_id is not None
+            and state["agent_directive"].memory_access
+            is not MemoryAccessMode.FORBIDDEN
+        ):
             try:
                 context["long_term_memory"] = await loader(
                     session_id,
@@ -69,9 +97,26 @@ def build_graph(
                 # prevent a support turn or weaken deterministic risk routing.
                 context["long_term_memory"] = []
                 context["memory_retrieval_degraded"] = True
+        else:
+            context["long_term_memory"] = []
+            context["memory_retrieval_degraded"] = False
         return {
             "context": context,
             "visited": ["context_fetch"],
+        }
+
+    def decision_gate(state: AgentState) -> dict[str, object]:
+        directive, trace = dependencies.control_plane.finalize(
+            state["agent_directive"],
+            state["context"],
+        )
+        context = dict(state["context"])
+        context["agent_control"] = directive.model_dump(mode="json")
+        return {
+            "agent_directive": directive,
+            "agent_trace": trace,
+            "context": context,
+            "visited": ["decision_gate"],
         }
 
     async def reply_planner(state: AgentState) -> dict[str, object]:
@@ -99,16 +144,59 @@ def build_graph(
             "visited": ["crisis_policy"],
         }
 
-    def route_after_risk(
+    def route_after_intent(
         state: AgentState,
     ) -> Literal["crisis_policy", "context_fetch"]:
-        if state["risk"].level in {RiskLevel.RED, RiskLevel.EMERGENCY}:
+        if (
+            state["agent_directive"].response_strategy
+            is ResponseStrategy.DETERMINISTIC_CRISIS
+        ):
             return "crisis_policy"
         return "context_fetch"
 
-    def output_guard(state: AgentState) -> dict[str, object]:
+    def route_after_decision(
+        state: AgentState,
+    ) -> Literal["evidence_fallback", "reply_planner"]:
+        if (
+            state["agent_directive"].response_strategy
+            is ResponseStrategy.DETERMINISTIC_ABSTAIN
+        ):
+            return "evidence_fallback"
+        return "reply_planner"
+
+    def evidence_fallback(state: AgentState) -> dict[str, object]:
+        if (
+            state["agent_directive"].evidence_requirement
+            is EvidenceRequirement.CONFIRMED_MEMORY
+        ):
+            text = "我没有找到与你这个问题相关的已确认记忆，所以不会猜测。"
+            support_mode: Literal["listen", "educate"] = "listen"
+        else:
+            text = "我目前没有足够的经审核资料来可靠回答这个问题，所以不会猜测。"
+            support_mode = "educate"
         return {
-            "response": dependencies.output_guard.validate(state["candidate_response"]),
+            "candidate_response": AgentResponse(
+                spoken_text=text,
+                display_text=text,
+                support_mode=support_mode,
+                risk_level=state["risk"].level,
+                evidence_ids=[],
+                visual_observation_ids=[],
+                action_proposals=[],
+                memory_candidates=[],
+                avatar_style="neutral_listening",
+            ),
+            "provider_metrics": {"provider": "deterministic_evidence_gate"},
+            "visited": ["evidence_fallback"],
+        }
+
+    def output_guard(state: AgentState) -> dict[str, object]:
+        controlled = dependencies.control_plane.validate_response(
+            state["candidate_response"],
+            state["agent_directive"],
+        )
+        return {
+            "response": dependencies.output_guard.validate(controlled),
             "visited": ["output_guard"],
         }
 
@@ -123,7 +211,10 @@ def build_graph(
     builder.add_node("normalize_input", normalize_input)
     builder.add_node("partial_risk", partial_risk)
     builder.add_node("final_risk", final_risk)
+    builder.add_node("intent_policy", intent_policy)
     builder.add_node("context_fetch", context_fetch)
+    builder.add_node("decision_gate", decision_gate)
+    builder.add_node("evidence_fallback", evidence_fallback)
     builder.add_node("reply_planner", reply_planner)
     builder.add_node("crisis_policy", crisis_policy)
     builder.add_node("output_guard", output_guard)
@@ -132,9 +223,12 @@ def build_graph(
     builder.add_edge(START, "normalize_input")
     builder.add_edge("normalize_input", "partial_risk")
     builder.add_edge("partial_risk", "final_risk")
-    builder.add_conditional_edges("final_risk", route_after_risk)
-    builder.add_edge("context_fetch", "reply_planner")
+    builder.add_edge("final_risk", "intent_policy")
+    builder.add_conditional_edges("intent_policy", route_after_intent)
+    builder.add_edge("context_fetch", "decision_gate")
+    builder.add_conditional_edges("decision_gate", route_after_decision)
     builder.add_edge("reply_planner", "output_guard")
+    builder.add_edge("evidence_fallback", "output_guard")
     builder.add_edge("crisis_policy", "output_guard")
     builder.add_edge("output_guard", "publish_response")
     builder.add_edge("publish_response", "propose_memory")

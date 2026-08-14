@@ -8,11 +8,15 @@ class MockAgentProvider:
         transcript: str,
         visual_summary: str,
         risk: RiskAssessment,
+        *,
+        reviewed_evidence_required: bool,
     ) -> dict[str, object]:
+        _ = reviewed_evidence_required
         return {
             "working_memory": [],
             "long_term_memory": [],
-            "evidence": [],
+            "reviewed_evidence": [],
+            "has_sufficient_evidence": False,
             "visual_summary": visual_summary,
         }
 
