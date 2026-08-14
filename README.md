@@ -99,7 +99,7 @@ faster-whisper small、BGE-M3 与 `qwen3.6:latest` 验收：
 音量、音质和浏览器自动播放体验仍需由使用者人工确认。因此当前 CPU-only 大模型结果
 不应描述为豆包级实时体验；若优先追求通话延迟，应由用户显式选择更轻量的本地文本模型。
 
-## Memory 2.3 事件索引与时态长期画像
+## Memory V2 工程闭环
 
 Memory 2.0 的第一条工程闭环已经接入：只有同一倾向在至少两个不同会话中出现，才会形成长期画像建议；画像必须由用户再次确认才能进入 Agent 上下文。相反证据会暂停相关画像并交由用户仲裁，撤回、编辑和永久删除会联动派生画像。详细设计、API、隐私边界和专项评测见 [`docs/MEMORY_V2.md`](docs/MEMORY_V2.md)。
 
@@ -112,6 +112,8 @@ V2.3 已增加后台事件摘要索引和 freshness 重排。事件摘要只负�
 V2.4 已把检索和最终回答拆开评测，并保留原有 BGE-M3 作为真实 CPU 对照臂。当前 6 查询工程集上，BGE hybrid 的完整证据 Recall@5 为 `0.875`、Precision@5 为 `1.000`、禁用记忆泄漏率为 `0.000`；本地 Qwen 最终回答的错误记忆采纳率为 `0.000`。该结果明确标记为非独立金标、不可投产，评测协议和四臂结果见 [`docs/MEMORY_V24_EVAL_PROTOCOL.md`](docs/MEMORY_V24_EVAL_PROTOCOL.md)。
 
 V2.4.1 的 10 用户/50 查询工程压力门进一步验证当前事实、过期/未确认/完整性异常隔离、跨用户隔离和 episode 来源约束；当前禁用记忆、跨用户和摘要上下文泄漏均为 `0.000`。这 50 条是生成式压力用例，报告不会把它们冒充独立金标或据此启用 GraphRAG。
+
+V2.5 已补齐发布治理：物理删除残留探针会扫描 SQLite/WAL/SHM；隐私审计覆盖跨用户派生关系、孤儿引用、失效 episode/profile 证据和原始媒体；人工评审包强制先脱敏，并要求每条回答同时接受独立的临床与隐私角色评审。空记忆回答现在走确定性拒答，不再让 Qwen 随机猜测措辞。真实 BGE-M3 + `qwen3.6:latest` 的统一发布门当前返回 `ENGINEERING_BASELINE_COMPLETE`，但由于独立金标、真实人工评审和外部签字尚未完成，`production_ready` 保持 `false`。完整边界和命令见 [`docs/MEMORY_V2_RELEASE.md`](docs/MEMORY_V2_RELEASE.md)。
 
 ## 最快 mock 演示（无 GPU）
 

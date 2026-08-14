@@ -4,6 +4,7 @@ from app.memory.multisession_evaluation import (
     AnswerExpectation,
     MemoryQualityGate,
     MultiSessionMemoryEvaluator,
+    OllamaMemoryAnswerGenerator,
     _answer_adherence_failures,
     _answer_is_adherent,
     _ndcg_at_k,
@@ -139,6 +140,17 @@ def test_answer_failure_reasons_are_structured_without_storing_answer_text() -> 
         "FORBIDDEN_TERM_PRESENT",
         "ANSWER_TOO_SHORT",
     ]
+
+
+def test_ollama_answer_generator_abstains_deterministically_without_memory() -> None:
+    generator = OllamaMemoryAnswerGenerator()
+    try:
+        answer = generator.generate(query="你记得我的健康情况吗？", memories=[])
+    finally:
+        generator.close()
+
+    assert "没有" in answer
+    assert "不会猜测" in answer
 
 
 def test_embedding_retriever_rejects_dimension_drift(tmp_path: Path) -> None:
