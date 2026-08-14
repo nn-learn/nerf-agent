@@ -198,5 +198,28 @@ export function useLiveKitMediaSession(
     interrupt,
     sendText: async () => undefined,
     hangUp,
+    listMemories: () => api.listMemories(sessionId),
+    getMemoryStatus: () => api.getMemoryStatus(sessionId),
+    retryMemoryIngestion: () => api.retryMemoryIngestion(sessionId),
+    decideMemory: (memoryId, decision) =>
+      api.decideMemory(sessionId, memoryId, decision),
+    deleteMemory: (memoryId) => api.deleteMemory(sessionId, memoryId),
+    updateMemory: (memoryId, text, retention) =>
+      api.updateMemory(sessionId, memoryId, text, retention),
+    getLatestMemoryRecall: (memoryId) =>
+      api.getLatestMemoryRecall(sessionId, memoryId),
+    listMemoryProfiles: () => api.listMemoryProfiles(sessionId),
+    decideMemoryProfile: (profileId, decision) =>
+      api.decideMemoryProfile(sessionId, profileId, decision),
+    listMemoryConflicts: () => api.listMemoryConflicts(sessionId),
+    decideMemoryConflict: (conflictId, decision, profileId) =>
+      api.decideMemoryConflict(sessionId, conflictId, decision, profileId),
+    listMemoryChanges: () => api.listMemoryChanges(sessionId),
+    decideMemoryChange: (changeId, decision) =>
+      api.decideMemoryChange(sessionId, changeId, decision),
+    getMemoryResearchConsent: () => api.getMemoryResearchConsent(sessionId),
+    setMemoryResearchConsent: (granted, policyVersion) =>
+      api.setMemoryResearchConsent(sessionId, granted, policyVersion),
+    getMemoryShadowReport: () => api.getMemoryShadowReport(sessionId),
   };
 }

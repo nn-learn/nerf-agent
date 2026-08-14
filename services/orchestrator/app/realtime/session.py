@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
-from app.graph.build import GraphDependencies, build_graph
+from app.graph.build import GraphDependencies, MemoryContextLoader, build_graph
 from app.providers.faster_whisper import FasterWhisperProvider
 from app.providers.mock import MockAgentProvider
 from app.providers.protocols import AgentProvider
@@ -26,6 +26,8 @@ from app.realtime.models import PcmChunk, TranscriptKind, TurnHandle
 from app.realtime.observer import NullTurnObserver, TurnObserver
 from app.realtime.turn_coordinator import TurnCoordinator
 from app.safety.models import AgentResponse, RiskAssessment, RiskLevel
+
+SessionEndCallback = Callable[[str], Awaitable[None]]
 
 
 class SessionNotFoundError(LookupError):
@@ -74,6 +76,7 @@ class SessionDescriptor(BaseModel):
 
 class SessionCreated(SessionDescriptor):
     access_token: str = Field(min_length=32, repr=False)
+    memory_subject_token: str | None = Field(default=None, min_length=40, repr=False)
 
 
 class TurnResult(BaseModel):
@@ -178,6 +181,8 @@ class SessionManager:
         vision_bridge: VisionBridge | None = None,
         audio_bridge: AudioBridge | None = None,
         provider_mode: str = "mock",
+        session_end_callback: SessionEndCallback | None = None,
+        memory_context_loader: MemoryContextLoader | None = None,
     ) -> None:
         self.store = store
         self._avatar = avatar_client or MockAvatarClient()
@@ -189,11 +194,13 @@ class SessionManager:
             GraphDependencies(
                 agent_provider=agent_provider or MockAgentProvider(),
                 output_guard=GraphDependencies.for_mock().output_guard,
+                memory_context_loader=memory_context_loader,
             )
         )
         self._sessions: dict[str, SessionRuntime] = {}
         self._sessions_lock = asyncio.Lock()
         self._consent = ConsentService(store)
+        self._session_end_callback = session_end_callback
 
     async def create_session(
         self,
@@ -444,6 +451,7 @@ class SessionManager:
 
         graph_result: dict[str, Any] = await self._graph.ainvoke(
             {
+                "session_id": turn.session_id,
                 "transcript": transcript,
                 "visual_summary": effective_visual_summary,
                 "turn_id": turn.turn_id,
@@ -489,6 +497,19 @@ class SessionManager:
             {
                 "evidence_ids": response.evidence_ids,
                 "reviewed_only": True,
+                "memory_user_confirmed_only": True,
+                "memory_ids": [
+                    str(item["memory_id"])
+                    for item in graph_result.get("context", {}).get(
+                        "long_term_memory", []
+                    )
+                    if isinstance(item, dict) and "memory_id" in item
+                ],
+                "memory_retrieval_degraded": bool(
+                    graph_result.get("context", {}).get(
+                        "memory_retrieval_degraded", False
+                    )
+                ),
             },
             observer=observer,
         ):
@@ -713,6 +734,8 @@ class SessionManager:
                 payload={"reason": "user_ended"},
             )
         await self._avatar.end_session(session_id)
+        if self._session_end_callback is not None:
+            await self._session_end_callback(session_id)
         return runtime.descriptor.model_copy(deep=True)
 
     async def _runtime(self, session_id: str) -> SessionRuntime:

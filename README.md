@@ -11,13 +11,19 @@
 - 原有语音、检索和数字人模型选择保持：`faster-whisper small（CPU INT8）+ Edge TTS Xiaoxiao + BGE-M3/BM25 + Wav2Vec/RAD-NeRF`。本地模式只把文本 Agent 切换为 Ollama 中的 `qwen3.6:latest`；云端 Qwen-Max 与 GPU 数字人仍是需要显式配置的独立边界。
 
 完整分层与回合事件顺序见 [docs/architecture.md](docs/architecture.md)。
+Memory V1 的分窗、授权、时间更新、评测和 1 万消息基准见 [docs/MEMORY_V1.md](docs/MEMORY_V1.md)。
 
 ## 已实现
 
 - FastAPI + LangGraph 显式 Agent 图
 - GREEN / AMBER / RED / EMERGENCY 四级确定性安全路由
 - BGE-M3 dense/sparse + BM25 + RRF 混合检索和证据约束
-- 工作、情景、语义与隔离安全记忆；敏感长期记忆需同意
+- 跨会话匿名记忆身份、后台分窗提取、逐条确认/拒绝/物理删除；只有用户已确认记忆会进入下一次 Agent 上下文
+- 通话页“我的记忆”中心：结束后显示本地提炼状态，候选记忆逐条审核，已确认记忆可二次确认后永久删除
+- 用户可修正记忆、设置 7/30/90 天或长期保留，并查看确定性的最近召回原因；解释只表示进入上下文，不伪造回答因果
+- Memory V1.4 多会话评测：Recall@5、nDCG@5、正确拒答、分类型治理泄漏、回答遵循和错误记忆采纳；支持词法与本地 BGE-M3 离线 A/B
+- Memory V1.5 离线 hybrid：词法+BGE 候选融合与确定性重排，DEV 选参/TEST 留出，双人标注仲裁协议、切片指标和小样本置信区间警告
+- Memory V1.6 可控影子评测：默认关闭、用户按版本显式授权后才懒加载 CPU BGE-M3；实时回答仍走词法基线，影子库不保存查询/记忆原文/embedding，支持撤回物理清除、超时、队列保护、熔断和聚合延迟/排名重合指标
 - 类型化工具、审批、幂等与模拟人工接管
 - LiveKit 短时单房间令牌，只允许 camera/microphone 发布
 - 摄像头二次同意、自预览、暂停即撤销、Qwen 临时视觉观察
@@ -92,6 +98,14 @@ faster-whisper small、BGE-M3 与 `qwen3.6:latest` 验收：
 `raw_audio=0`、`raw_video=0`、`camera_frame=0`、`binary_columns=0`。真实扬声器的
 音量、音质和浏览器自动播放体验仍需由使用者人工确认。因此当前 CPU-only 大模型结果
 不应描述为豆包级实时体验；若优先追求通话延迟，应由用户显式选择更轻量的本地文本模型。
+
+## Memory 2.2 时态长期画像
+
+Memory 2.0 的第一条工程闭环已经接入：只有同一倾向在至少两个不同会话中出现，才会形成长期画像建议；画像必须由用户再次确认才能进入 Agent 上下文。相反证据会暂停相关画像并交由用户仲裁，撤回、编辑和永久删除会联动派生画像。详细设计、API、隐私边界和专项评测见 [`docs/MEMORY_V2.md`](docs/MEMORY_V2.md)。
+
+V2.1 另外提供默认关闭的本地 Qwen claim 语义分组：它只聚类不透明记忆 ID，不能生成画像内容，失败即回退规则；通过 `PSYAVATAR_MEMORY_CLAIM_NORMALIZER_MODE=ollama` 显式启用。
+
+V2.2 已区分事实有效时间与系统观察时间：普通的后出现反话仍进入冲突治理，只有明确表达“以前……现在……”或“现在改成……”才形成独立变化提案。用户确认前旧画像继续生效；确认后旧画像保留为有截止时间的历史版本，新画像从变化时间开始生效。记忆中心可直接查看并接受或拒绝这类变化。
 
 ## 最快 mock 演示（无 GPU）
 

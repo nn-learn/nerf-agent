@@ -17,6 +17,7 @@ import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 
 import { CallControls } from "./CallControls";
 import { CameraConsent } from "./CameraConsent";
+import { MemoryCenter } from "./MemoryCenter";
 import { StatusOverlay } from "./StatusOverlay";
 import type { MediaSessionController } from "./useMediaSession";
 
@@ -155,6 +156,7 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
   const [visionOverride, setVisionOverride] = useState<boolean | null>(null);
   const [textInput, setTextInput] = useState("");
   const [textBusy, setTextBusy] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const cameraActive =
     visionOverride ?? media.visionState === "active";
   const callEnded = media.connectionState === "disconnected";
@@ -167,6 +169,32 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
       (media.errorMessage
         ? "语音暂时不可用，你可以使用文字输入继续。"
         : "我在这里。你可以慢慢说，我们先从此刻最困扰你的事情开始。");
+  const memoryPort = media.listMemories &&
+    media.getMemoryStatus &&
+    media.retryMemoryIngestion &&
+    media.decideMemory &&
+    media.deleteMemory &&
+    media.updateMemory &&
+    media.getLatestMemoryRecall
+    ? {
+        listMemories: media.listMemories,
+        getMemoryStatus: media.getMemoryStatus,
+        retryMemoryIngestion: media.retryMemoryIngestion,
+        decideMemory: media.decideMemory,
+        deleteMemory: media.deleteMemory,
+        updateMemory: media.updateMemory,
+        getLatestMemoryRecall: media.getLatestMemoryRecall,
+        getMemoryResearchConsent: media.getMemoryResearchConsent,
+        setMemoryResearchConsent: media.setMemoryResearchConsent,
+        getMemoryShadowReport: media.getMemoryShadowReport,
+        listMemoryProfiles: media.listMemoryProfiles,
+        decideMemoryProfile: media.decideMemoryProfile,
+        listMemoryConflicts: media.listMemoryConflicts,
+        decideMemoryConflict: media.decideMemoryConflict,
+        listMemoryChanges: media.listMemoryChanges,
+        decideMemoryChange: media.decideMemoryChange,
+      }
+    : undefined;
 
   const confirmCamera = async () => {
     setConsentBusy(true);
@@ -226,6 +254,16 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
             <Clock3 aria-hidden="true" size={15} />
             12:08
           </span>
+          {memoryPort && (
+            <button
+              className="memory-header-button"
+              onClick={() => setMemoryOpen(true)}
+              type="button"
+            >
+              <BrainCircuit aria-hidden="true" size={15} />
+              我的记忆
+            </button>
+          )}
         </div>
       </header>
 
@@ -281,6 +319,15 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
               <Sparkles aria-hidden="true" />
               <h2>本次陪伴已结束</h2>
               <p>感谢你照顾自己的感受。会话中的原始音视频没有被保存。</p>
+              {memoryPort && (
+                <button
+                  className="button button-secondary"
+                  onClick={() => setMemoryOpen(true)}
+                  type="button"
+                >
+                  审核本次候选记忆
+                </button>
+              )}
               <button
                 className="button button-primary"
                 onClick={() => window.location.reload()}
@@ -405,6 +452,14 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
         onConfirm={() => void confirmCamera()}
         open={consentOpen}
       />
+      {memoryPort && (
+        <MemoryCenter
+          ended={callEnded}
+          onClose={() => setMemoryOpen(false)}
+          open={memoryOpen}
+          port={memoryPort}
+        />
+      )}
     </main>
   );
 }

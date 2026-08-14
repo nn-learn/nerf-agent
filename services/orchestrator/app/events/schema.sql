@@ -86,8 +86,220 @@ CREATE TABLE IF NOT EXISTS memory_items (
     source_turn_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     state TEXT NOT NULL,
-    content TEXT NOT NULL
+    content TEXT NOT NULL,
+    aspect TEXT NOT NULL DEFAULT 'FACT',
+    subject_key TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_window_id TEXT,
+    purpose_scope TEXT NOT NULL DEFAULT 'personalization',
+    valid_from_ms INTEGER,
+    expires_at_ms INTEGER,
+    user_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (user_confirmed IN (0, 1)),
+    integrity_flags_json TEXT NOT NULL DEFAULT '[]',
+    user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
+    created_at_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+    supersedes_memory_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS memory_retrievals (
+    retrieval_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    score REAL NOT NULL,
+    relevance_score REAL NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    used_at_ms INTEGER NOT NULL,
+    UNIQUE(session_id, turn_id, memory_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_latest
+    ON memory_retrievals(user_id, memory_id, used_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS memory_observations (
+    observation_id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    valid_at_ms INTEGER NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    UNIQUE(user_id, memory_id, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_observations_user_time
+    ON memory_observations(user_id, observed_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS memory_profiles (
+    profile_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    aspect TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    state TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    evidence_count INTEGER NOT NULL,
+    supporting_evidence_count INTEGER NOT NULL,
+    conflicting_evidence_count INTEGER NOT NULL,
+    distinct_session_count INTEGER NOT NULL,
+    contains_sensitive_content INTEGER NOT NULL CHECK (contains_sensitive_content IN (0, 1)),
+    purpose_scope TEXT NOT NULL DEFAULT 'personalization',
+    valid_from_ms INTEGER,
+    valid_to_ms INTEGER,
+    expires_at_ms INTEGER,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    profile_version TEXT NOT NULL,
+    signature_hash TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
+    UNIQUE(user_id, subject_key, signature_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_profiles_active_scope
+    ON memory_profiles(user_id, state, purpose_scope, expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS memory_profile_evidence (
+    profile_id TEXT NOT NULL,
+    observation_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    PRIMARY KEY(profile_id, observation_id),
+    FOREIGN KEY(profile_id) REFERENCES memory_profiles(profile_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_profile_evidence_memory
+    ON memory_profile_evidence(memory_id, profile_id);
+
+CREATE TABLE IF NOT EXISTS memory_conflict_groups (
+    conflict_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    selected_profile_id TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    UNIQUE(user_id, subject_key, evidence_digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_conflicts_user_state
+    ON memory_conflict_groups(user_id, state, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS memory_conflict_options (
+    conflict_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    PRIMARY KEY(conflict_id, profile_id),
+    FOREIGN KEY(conflict_id) REFERENCES memory_conflict_groups(conflict_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(profile_id) REFERENCES memory_profiles(profile_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_profile_rejections (
+    user_id TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    signature_hash TEXT NOT NULL,
+    rejected_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(user_id, subject_key, signature_hash)
+);
+
+CREATE TABLE IF NOT EXISTS memory_profile_changes (
+    change_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    previous_profile_id TEXT NOT NULL,
+    proposed_profile_id TEXT NOT NULL,
+    effective_at_ms INTEGER NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    UNIQUE(user_id, subject_key, evidence_digest),
+    FOREIGN KEY(previous_profile_id) REFERENCES memory_profiles(profile_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(proposed_profile_id) REFERENCES memory_profiles(profile_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_changes_user_state
+    ON memory_profile_changes(user_id, state, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS memory_research_consents (
+    user_id TEXT PRIMARY KEY,
+    granted INTEGER NOT NULL CHECK (granted IN (0, 1)),
+    policy_version TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES memory_subjects(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_shadow_runs (
+    shadow_run_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    consent_policy_version TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    baseline_latency_ms REAL NOT NULL,
+    shadow_latency_ms REAL,
+    overlap_at_5 REAL,
+    rank_biased_overlap REAL,
+    baseline_count INTEGER NOT NULL,
+    shadow_count INTEGER,
+    error_code TEXT,
+    created_at_ms INTEGER NOT NULL,
+    completed_at_ms INTEGER,
+    expires_at_ms INTEGER NOT NULL,
+    UNIQUE(session_id, turn_id, strategy_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_shadow_runs_user_time
+    ON memory_shadow_runs(user_id, created_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS memory_shadow_rankings (
+    shadow_run_id TEXT NOT NULL,
+    arm TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    memory_id TEXT NOT NULL,
+    score REAL NOT NULL,
+    relevance_score REAL NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    PRIMARY KEY (shadow_run_id, arm, rank),
+    FOREIGN KEY (shadow_run_id) REFERENCES memory_shadow_runs(shadow_run_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_ingestion_cursors (
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_subjects (
+    user_id TEXT PRIMARY KEY,
+    token_digest TEXT NOT NULL UNIQUE,
+    created_at_ms INTEGER NOT NULL,
+    last_seen_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_memory_subjects (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    bound_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY (user_id) REFERENCES memory_subjects(user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_memory_subject_user
+    ON session_memory_subjects(user_id, bound_at_ms);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     tool_call_id TEXT PRIMARY KEY,

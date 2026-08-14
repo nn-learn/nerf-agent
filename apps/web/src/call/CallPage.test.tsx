@@ -231,3 +231,42 @@ it("submits a nonblank text fallback and disables it while thinking", async () =
   })).toBeDisabled();
   expect(screen.getByRole("button", { name: "回应中…" })).toBeDisabled();
 });
+
+
+it("opens the memory review from the ended-call screen", async () => {
+  const user = userEvent.setup();
+  const listMemories = vi.fn().mockResolvedValue([]);
+  const getMemoryStatus = vi.fn().mockResolvedValue({
+    state: "complete",
+    retryable: false,
+  });
+  render(
+    <CallPage
+      media={{
+        connectionState: "disconnected",
+        microphoneEnabled: false,
+        visionState: "off",
+        agentState: "disconnected",
+        publishCamera: vi.fn(),
+        pauseVision: vi.fn(),
+        toggleMicrophone: vi.fn(),
+        interrupt: vi.fn(),
+        sendText: vi.fn(),
+        hangUp: vi.fn(),
+        listMemories,
+        getMemoryStatus,
+        retryMemoryIngestion: vi.fn(),
+        decideMemory: vi.fn(),
+        deleteMemory: vi.fn(),
+        updateMemory: vi.fn(),
+        getLatestMemoryRecall: vi.fn(),
+      }}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "审核本次候选记忆" }));
+
+  expect(await screen.findByRole("dialog", { name: "我的记忆中心" })).toBeInTheDocument();
+  expect(listMemories).toHaveBeenCalledTimes(1);
+  expect(getMemoryStatus).toHaveBeenCalledTimes(1);
+});

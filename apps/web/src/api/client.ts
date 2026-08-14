@@ -16,6 +16,7 @@ export interface SessionDescriptor {
 
 export interface SessionCreated extends SessionDescriptor {
   access_token: string;
+  memory_subject_token?: string | null;
 }
 
 export interface TurnResult {
@@ -67,7 +68,141 @@ export interface HandoffRecord {
   state: string;
 }
 
+export interface MemoryView {
+  memory_id: string;
+  text: string;
+  aspect: "FACT" | "PREFERENCE" | "GOAL" | "COPING_STRATEGY" | "BOUNDARY";
+  state:
+    | "CANDIDATE"
+    | "AWAITING_CONSENT"
+    | "ACTIVE"
+    | "REVOKED"
+    | "EXPIRED"
+    | "REJECTED"
+    | "SUPERSEDED"
+    | "QUARANTINED";
+  contains_sensitive_content: boolean;
+  confidence: number;
+  purpose_scope: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  source_turn_id: string;
+  expires_at_ms?: number | null;
+  user_edited?: boolean;
+}
+
+export type MemoryRetention = "7_days" | "30_days" | "90_days" | "forever";
+
+export interface MemoryRecallView {
+  used_at_ms: number;
+  score: number;
+  relevance_score: number;
+  reason_codes: string[];
+  turn_id: string;
+}
+
+export interface MemoryIngestionView {
+  state: "idle" | "queued" | "processing" | "complete" | "failed" | "pending";
+  retryable: boolean;
+}
+
+export interface MemoryResearchConsentView {
+  enabled: boolean;
+  granted: boolean;
+  policy_version: string;
+  strategy_version: string;
+  updated_at_ms?: number | null;
+  retained_fields: string[];
+  excluded_fields: string[];
+}
+
+export interface MemoryShadowAggregate {
+  run_count: number;
+  completed_count: number;
+  failed_count: number;
+  timeout_count: number;
+  circuit_open_count: number;
+  completion_rate: number;
+  reliable: boolean;
+  minimum_reliable_runs: number;
+  warnings: string[];
+  mean_overlap_at_5?: number | null;
+  mean_rank_biased_overlap?: number | null;
+  baseline_latency_ms_p50?: number | null;
+  baseline_latency_ms_p95?: number | null;
+  shadow_latency_ms_p50?: number | null;
+  shadow_latency_ms_p95?: number | null;
+  strategy_versions: Record<string, number>;
+}
+
+export interface MemoryShadowReportView {
+  enabled: boolean;
+  consent_granted: boolean;
+  aggregate: MemoryShadowAggregate;
+  runtime?: {
+    policy_version: string;
+    strategy_version: string;
+    model_state: string;
+    circuit_open: boolean;
+    pending_count: number;
+    max_concurrency: number;
+    max_pending: number;
+  } | null;
+}
+
+export interface MemoryProfileEvidenceView {
+  memory_id: string;
+  text: string;
+  relation: "SUPPORTS" | "CONTRADICTS";
+  valid_at_ms: number;
+  observed_at_ms: number;
+}
+
+export interface MemoryProfileView {
+  profile_id: string;
+  subject_key: string;
+  aspect: MemoryView["aspect"];
+  statement: string;
+  state: "AWAITING_CONFIRMATION" | "ACTIVE" | "STALE" | "HISTORICAL" | "REJECTED";
+  confidence: number;
+  evidence_count: number;
+  supporting_evidence_count: number;
+  conflicting_evidence_count: number;
+  distinct_session_count: number;
+  contains_sensitive_content: boolean;
+  valid_from_ms?: number | null;
+  valid_to_ms?: number | null;
+  expires_at_ms?: number | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  user_edited: boolean;
+  evidence: MemoryProfileEvidenceView[];
+}
+
+export interface MemoryConflictView {
+  conflict_id: string;
+  subject_key: string;
+  state: "OPEN" | "RESOLVED" | "DISMISSED";
+  selected_profile_id?: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  options: MemoryProfileView[];
+}
+
+export interface MemoryChangeView {
+  change_id: string;
+  subject_key: string;
+  state: "OPEN" | "APPLIED" | "REJECTED";
+  effective_at_ms: number;
+  observed_at_ms: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  previous_profile: MemoryProfileView;
+  proposed_profile: MemoryProfileView;
+}
+
 const DEFAULT_API_BASE = "http://localhost:8000";
+const MEMORY_SUBJECT_STORAGE_KEY = "psyavatar.memorySubjectToken.v1";
 
 
 export class PsyAvatarApi {
@@ -85,15 +220,22 @@ export class PsyAvatarApi {
   createSession(sessionId: string): Promise<SessionCreated> {
     const existing = this.sessionCreations.get(sessionId);
     if (existing) return existing;
+    const memorySubjectToken = this.readMemorySubjectToken();
     const creation = this.request<SessionCreated>("/api/sessions", {
       method: "POST",
       body: JSON.stringify({
         camera_consent: false,
         client_session_id: sessionId,
+        ...(memorySubjectToken
+          ? { memory_subject_token: memorySubjectToken }
+          : {}),
       }),
     })
       .then((session) => {
         this.accessToken = session.access_token;
+        if (session.memory_subject_token) {
+          this.writeMemorySubjectToken(session.memory_subject_token);
+        }
         return session;
       })
       .catch((error: unknown) => {
@@ -108,6 +250,168 @@ export class PsyAvatarApi {
     return this.request<SessionDescriptor>(`/api/sessions/${sessionId}`, {
       method: "DELETE",
     });
+  }
+
+  async listMemories(sessionId: string): Promise<MemoryView[]> {
+    return this.request<MemoryView[]>(`/api/sessions/${sessionId}/memories`, {
+      method: "GET",
+    });
+  }
+
+  async listMemoryProfiles(sessionId: string): Promise<MemoryProfileView[]> {
+    return this.request<MemoryProfileView[]>(
+      `/api/sessions/${sessionId}/memory-profiles`,
+      { method: "GET" },
+    );
+  }
+
+  async decideMemoryProfile(
+    sessionId: string,
+    profileId: string,
+    decision: "confirm" | "reject",
+  ): Promise<MemoryProfileView | null> {
+    return this.request<MemoryProfileView | null>(
+      `/api/sessions/${sessionId}/memory-profiles/${profileId}/decision`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    );
+  }
+
+  async listMemoryConflicts(sessionId: string): Promise<MemoryConflictView[]> {
+    return this.request<MemoryConflictView[]>(
+      `/api/sessions/${sessionId}/memory-conflicts`,
+      { method: "GET" },
+    );
+  }
+
+  async decideMemoryConflict(
+    sessionId: string,
+    conflictId: string,
+    decision: "select" | "dismiss",
+    profileId?: string,
+  ): Promise<MemoryConflictView> {
+    return this.request<MemoryConflictView>(
+      `/api/sessions/${sessionId}/memory-conflicts/${conflictId}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          decision,
+          ...(profileId ? { profile_id: profileId } : {}),
+        }),
+      },
+    );
+  }
+
+  async listMemoryChanges(sessionId: string): Promise<MemoryChangeView[]> {
+    return this.request<MemoryChangeView[]>(
+      `/api/sessions/${sessionId}/memory-changes`,
+      { method: "GET" },
+    );
+  }
+
+  async decideMemoryChange(
+    sessionId: string,
+    changeId: string,
+    decision: "apply" | "reject",
+  ): Promise<MemoryChangeView> {
+    return this.request<MemoryChangeView>(
+      `/api/sessions/${sessionId}/memory-changes/${changeId}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      },
+    );
+  }
+
+  async getMemoryStatus(sessionId: string): Promise<MemoryIngestionView> {
+    return this.request<MemoryIngestionView>(
+      `/api/sessions/${sessionId}/memories/status`,
+      { method: "GET" },
+    );
+  }
+
+  async retryMemoryIngestion(sessionId: string): Promise<MemoryIngestionView> {
+    return this.request<MemoryIngestionView>(
+      `/api/sessions/${sessionId}/memories/retry`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+  }
+
+  async getMemoryResearchConsent(
+    sessionId: string,
+  ): Promise<MemoryResearchConsentView> {
+    return this.request<MemoryResearchConsentView>(
+      `/api/sessions/${sessionId}/memories/research-consent`,
+      { method: "GET" },
+    );
+  }
+
+  async setMemoryResearchConsent(
+    sessionId: string,
+    granted: boolean,
+    policyVersion: string,
+  ): Promise<MemoryResearchConsentView> {
+    return this.request<MemoryResearchConsentView>(
+      `/api/sessions/${sessionId}/memories/research-consent`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          granted,
+          acknowledged_policy_version: policyVersion,
+        }),
+      },
+    );
+  }
+
+  async getMemoryShadowReport(sessionId: string): Promise<MemoryShadowReportView> {
+    return this.request<MemoryShadowReportView>(
+      `/api/sessions/${sessionId}/memories/shadow-report`,
+      { method: "GET" },
+    );
+  }
+
+  async decideMemory(
+    sessionId: string,
+    memoryId: string,
+    decision: "confirm" | "reject",
+  ): Promise<MemoryView> {
+    return this.request<MemoryView>(
+      `/api/sessions/${sessionId}/memories/${memoryId}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      },
+    );
+  }
+
+  async deleteMemory(sessionId: string, memoryId: string): Promise<void> {
+    await this.request(`/api/sessions/${sessionId}/memories/${memoryId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async updateMemory(
+    sessionId: string,
+    memoryId: string,
+    text: string,
+    retention: MemoryRetention,
+  ): Promise<MemoryView> {
+    return this.request<MemoryView>(
+      `/api/sessions/${sessionId}/memories/${memoryId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ text, retention }),
+      },
+    );
+  }
+
+  async getLatestMemoryRecall(
+    sessionId: string,
+    memoryId: string,
+  ): Promise<MemoryRecallView | null> {
+    return this.request<MemoryRecallView | null>(
+      `/api/sessions/${sessionId}/memories/${memoryId}/latest-recall`,
+      { method: "GET" },
+    );
   }
 
   createTextTurn(sessionId: string, text: string): Promise<TurnResult> {
@@ -217,6 +521,22 @@ export class PsyAvatarApi {
       "X-Demo-Role": "CLINICIAN_DEMO",
       "X-Demo-Session": sessionId,
     };
+  }
+
+  private readMemorySubjectToken(): string | undefined {
+    try {
+      return globalThis.localStorage?.getItem(MEMORY_SUBJECT_STORAGE_KEY) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private writeMemorySubjectToken(token: string): void {
+    try {
+      globalThis.localStorage?.setItem(MEMORY_SUBJECT_STORAGE_KEY, token);
+    } catch {
+      // Storage may be unavailable in privacy mode; the session remains usable.
+    }
   }
 
   private async request<T = unknown>(

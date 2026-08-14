@@ -46,6 +46,64 @@ interface LocalRealtimeApi {
   createRealtimeClient(sessionId: string): RealtimeClientPort;
   createTextTurn(sessionId: string, text: string): Promise<TurnResult>;
   endSession(sessionId: string): Promise<SessionDescriptor>;
+  listMemories?(sessionId: string): ReturnType<PsyAvatarApi["listMemories"]>;
+  getMemoryStatus?(sessionId: string): ReturnType<PsyAvatarApi["getMemoryStatus"]>;
+  retryMemoryIngestion?(sessionId: string): ReturnType<PsyAvatarApi["retryMemoryIngestion"]>;
+  decideMemory?(
+    sessionId: string,
+    memoryId: string,
+    decision: "confirm" | "reject",
+  ): ReturnType<PsyAvatarApi["decideMemory"]>;
+  deleteMemory?(
+    sessionId: string,
+    memoryId: string,
+  ): ReturnType<PsyAvatarApi["deleteMemory"]>;
+  updateMemory?(
+    sessionId: string,
+    memoryId: string,
+    text: string,
+    retention: Parameters<PsyAvatarApi["updateMemory"]>[3],
+  ): ReturnType<PsyAvatarApi["updateMemory"]>;
+  getLatestMemoryRecall?(
+    sessionId: string,
+    memoryId: string,
+  ): ReturnType<PsyAvatarApi["getLatestMemoryRecall"]>;
+  getMemoryResearchConsent?(
+    sessionId: string,
+  ): ReturnType<PsyAvatarApi["getMemoryResearchConsent"]>;
+  setMemoryResearchConsent?(
+    sessionId: string,
+    granted: boolean,
+    policyVersion: string,
+  ): ReturnType<PsyAvatarApi["setMemoryResearchConsent"]>;
+  getMemoryShadowReport?(
+    sessionId: string,
+  ): ReturnType<PsyAvatarApi["getMemoryShadowReport"]>;
+  listMemoryProfiles?(
+    sessionId: string,
+  ): ReturnType<PsyAvatarApi["listMemoryProfiles"]>;
+  decideMemoryProfile?(
+    sessionId: string,
+    profileId: string,
+    decision: "confirm" | "reject",
+  ): ReturnType<PsyAvatarApi["decideMemoryProfile"]>;
+  listMemoryConflicts?(
+    sessionId: string,
+  ): ReturnType<PsyAvatarApi["listMemoryConflicts"]>;
+  decideMemoryConflict?(
+    sessionId: string,
+    conflictId: string,
+    decision: "select" | "dismiss",
+    profileId?: string,
+  ): ReturnType<PsyAvatarApi["decideMemoryConflict"]>;
+  listMemoryChanges?(
+    sessionId: string,
+  ): ReturnType<PsyAvatarApi["listMemoryChanges"]>;
+  decideMemoryChange?(
+    sessionId: string,
+    changeId: string,
+    decision: "apply" | "reject",
+  ): ReturnType<PsyAvatarApi["decideMemoryChange"]>;
 }
 
 export interface LocalRealtimeMediaDependencies {
@@ -562,6 +620,99 @@ export function useLocalRealtimeMediaSession(
     return releaseLifecycle(lifecycle, true);
   }, [releaseLifecycle, setAgentState]);
 
+  const memoryController = dependencies.api.listMemories &&
+    dependencies.api.getMemoryStatus &&
+    dependencies.api.retryMemoryIngestion &&
+    dependencies.api.decideMemory &&
+    dependencies.api.deleteMemory &&
+    dependencies.api.updateMemory &&
+    dependencies.api.getLatestMemoryRecall
+    ? {
+        listMemories: () => dependencies.api.listMemories!(sessionId),
+        getMemoryStatus: () => dependencies.api.getMemoryStatus!(sessionId),
+        retryMemoryIngestion: () =>
+          dependencies.api.retryMemoryIngestion!(sessionId),
+        decideMemory: (memoryId: string, decision: "confirm" | "reject") =>
+          dependencies.api.decideMemory!(sessionId, memoryId, decision),
+        deleteMemory: (memoryId: string) =>
+          dependencies.api.deleteMemory!(sessionId, memoryId),
+        updateMemory: (
+          memoryId: string,
+          text: string,
+          retention: Parameters<PsyAvatarApi["updateMemory"]>[3],
+        ) => dependencies.api.updateMemory!(
+          sessionId,
+          memoryId,
+          text,
+          retention,
+        ),
+        getLatestMemoryRecall: (memoryId: string) =>
+          dependencies.api.getLatestMemoryRecall!(sessionId, memoryId),
+        ...(dependencies.api.listMemoryProfiles &&
+        dependencies.api.decideMemoryProfile &&
+        dependencies.api.listMemoryConflicts &&
+        dependencies.api.decideMemoryConflict
+          ? {
+              listMemoryProfiles: () =>
+                dependencies.api.listMemoryProfiles!(sessionId),
+              decideMemoryProfile: (
+                profileId: string,
+                decision: "confirm" | "reject",
+              ) => dependencies.api.decideMemoryProfile!(
+                sessionId,
+                profileId,
+                decision,
+              ),
+              listMemoryConflicts: () =>
+                dependencies.api.listMemoryConflicts!(sessionId),
+              decideMemoryConflict: (
+                conflictId: string,
+                decision: "select" | "dismiss",
+                profileId?: string,
+              ) => dependencies.api.decideMemoryConflict!(
+                sessionId,
+                conflictId,
+                decision,
+                profileId,
+              ),
+              ...(dependencies.api.listMemoryChanges &&
+              dependencies.api.decideMemoryChange
+                ? {
+                    listMemoryChanges: () =>
+                      dependencies.api.listMemoryChanges!(sessionId),
+                    decideMemoryChange: (
+                      changeId: string,
+                      decision: "apply" | "reject",
+                    ) => dependencies.api.decideMemoryChange!(
+                      sessionId,
+                      changeId,
+                      decision,
+                    ),
+                  }
+                : {}),
+            }
+          : {}),
+        ...(dependencies.api.getMemoryResearchConsent &&
+        dependencies.api.setMemoryResearchConsent &&
+        dependencies.api.getMemoryShadowReport
+          ? {
+              getMemoryResearchConsent: () =>
+                dependencies.api.getMemoryResearchConsent!(sessionId),
+              setMemoryResearchConsent: (
+                granted: boolean,
+                policyVersion: string,
+              ) => dependencies.api.setMemoryResearchConsent!(
+                sessionId,
+                granted,
+                policyVersion,
+              ),
+              getMemoryShadowReport: () =>
+                dependencies.api.getMemoryShadowReport!(sessionId),
+            }
+          : {}),
+      }
+    : {};
+
   return {
     connectionState,
     microphoneEnabled,
@@ -577,5 +728,6 @@ export function useLocalRealtimeMediaSession(
     interrupt,
     sendText,
     hangUp,
+    ...memoryController,
   };
 }

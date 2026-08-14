@@ -1,0 +1,6 @@
+{"case_id":"explicit_current_change","text":"以前我喜欢简短回答，现在改成详细解释","valid_at_ms":40000,"observed_at_ms":45000,"expected_outcome":"CHANGE"}
+{"case_id":"later_opposite_is_not_change","text":"用户偏好：请详细展开解释","valid_at_ms":40000,"observed_at_ms":45000,"expected_outcome":"CONFLICT"}
+{"case_id":"past_only_is_not_current","text":"以前我喜欢详细回答","valid_at_ms":5000,"observed_at_ms":45000,"expected_outcome":"STABLE"}
+{"case_id":"same_current_preference","text":"用户偏好：请先给简短结论","valid_at_ms":40000,"observed_at_ms":45000,"expected_outcome":"STABLE"}
+{"case_id":"old_value_first_current_same","text":"以前我喜欢详细回答，现在改成简短结论","valid_at_ms":40000,"observed_at_ms":45000,"expected_outcome":"STABLE"}
+{"case_id":"revoked_change_cannot_apply","text":"以前我喜欢简短回答，现在改成详细解释","valid_at_ms":40000,"observed_at_ms":45000,"expected_outcome":"CHANGE","revoke_before_decision":true}

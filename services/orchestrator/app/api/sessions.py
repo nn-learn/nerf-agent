@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Path, status
@@ -17,6 +18,8 @@ from app.realtime.session import (
 from app.security.auth import require_session_access
 
 SessionId = Annotated[str, Path(min_length=1, max_length=96)]
+BindMemorySubject = Callable[[str, str | None], str | None]
+ValidateMemorySubject = Callable[[str], None]
 
 
 class CreateSessionRequest(BaseModel):
@@ -26,6 +29,12 @@ class CreateSessionRequest(BaseModel):
         min_length=1,
         max_length=96,
         pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    memory_subject_token: str | None = Field(
+        default=None,
+        min_length=40,
+        max_length=128,
+        pattern=r"^pms_[A-Za-z0-9_-]+$",
     )
 
 
@@ -38,7 +47,12 @@ class InterruptRequest(BaseModel):
     reason: str = Field(default="user_speech", min_length=1, max_length=64)
 
 
-def create_sessions_router(manager: SessionManager) -> APIRouter:
+def create_sessions_router(
+    manager: SessionManager,
+    *,
+    bind_memory_subject: BindMemorySubject | None = None,
+    validate_memory_subject: ValidateMemorySubject | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
     @router.post(
@@ -48,9 +62,23 @@ def create_sessions_router(manager: SessionManager) -> APIRouter:
     )
     async def create_session(request: CreateSessionRequest) -> SessionCreated:
         try:
-            return await manager.create_session(
+            if (
+                request.memory_subject_token is not None
+                and validate_memory_subject is not None
+            ):
+                validate_memory_subject(request.memory_subject_token)
+            session = await manager.create_session(
                 camera_consent=request.camera_consent,
                 requested_id=request.client_session_id,
+            )
+            if bind_memory_subject is None:
+                return session
+            issued_token = bind_memory_subject(
+                session.session_id,
+                request.memory_subject_token,
+            )
+            return session.model_copy(
+                update={"memory_subject_token": issued_token}
             )
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error

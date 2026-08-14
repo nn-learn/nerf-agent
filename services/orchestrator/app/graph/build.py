@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -11,11 +12,16 @@ from app.safety.models import RiskLevel
 from app.safety.output_guard import OutputGuard
 from app.safety.rules import assess_risk
 
+MemoryContextLoader = Callable[
+    [str, str, str], Awaitable[list[dict[str, object]]]
+]
+
 
 @dataclass(frozen=True)
 class GraphDependencies:
     agent_provider: AgentProvider
     output_guard: OutputGuard
+    memory_context_loader: MemoryContextLoader | None = None
 
     @classmethod
     def for_mock(cls) -> "GraphDependencies":
@@ -43,12 +49,28 @@ def build_graph(
         }
 
     async def context_fetch(state: AgentState) -> dict[str, object]:
+        context = await dependencies.agent_provider.load_context(
+            state["transcript"],
+            state.get("visual_summary", ""),
+            state["risk"],
+        )
+        loader = dependencies.memory_context_loader
+        session_id = state.get("session_id")
+        if loader is not None and session_id is not None:
+            try:
+                context["long_term_memory"] = await loader(
+                    session_id,
+                    state["turn_id"],
+                    state["transcript"],
+                )
+                context["memory_retrieval_degraded"] = False
+            except Exception:
+                # Personalization is optional context. Its failure must never
+                # prevent a support turn or weaken deterministic risk routing.
+                context["long_term_memory"] = []
+                context["memory_retrieval_degraded"] = True
         return {
-            "context": await dependencies.agent_provider.load_context(
-                state["transcript"],
-                state.get("visual_summary", ""),
-                state["risk"],
-            ),
+            "context": context,
             "visited": ["context_fetch"],
         }
 

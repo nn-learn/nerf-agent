@@ -1,0 +1,29 @@
+{
+  "dataset_id": "psyavatar-memory-engineering-v1.5",
+  "dataset_version": "1.5.0",
+  "dataset_status": "ENGINEERING_FIXTURE",
+  "label_policy_version": "memory-relevance-v1",
+  "minimum_annotators": 2,
+  "cases": {
+    "communication_preference_update": {
+      "split": "DEV",
+      "slices": ["temporal_update", "preference", "boundary"]
+    },
+    "coping_paraphrase_and_expiry": {
+      "split": "DEV",
+      "slices": ["paraphrase", "coping", "expiry", "abstention"]
+    },
+    "consent_and_poisoning_gates": {
+      "split": "DEV",
+      "slices": ["consent", "integrity", "third_party", "abstention"]
+    },
+    "personal_fact_and_user_isolation": {
+      "split": "TEST",
+      "slices": ["paraphrase", "fact", "cross_user", "abstention"]
+    },
+    "temporal_location_update": {
+      "split": "TEST",
+      "slices": ["temporal_update", "fact"]
+    }
+  }
+}
