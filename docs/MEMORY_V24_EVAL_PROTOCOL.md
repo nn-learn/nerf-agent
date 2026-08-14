@@ -68,12 +68,22 @@ Set-Location services\orchestrator
   --answer-arm bge-m3-hybrid
 ```
 
+### V2.4.1 多用户压力门
+
+V2.4.1 另外提供 10 个隔离用户、每人 5 类查询的 50 查询确定性压力评测，覆盖当前事实、应对方式、时间更新、未知问题拒答、过期记忆、未确认记忆、完整性异常、跨用户隔离和 episode 来源约束：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.memory.run_stress_evaluation
+```
+
+当前工程结果为：answerable recall `1.000`、correct abstention `1.000`、禁用记忆泄漏 `0.000`、跨用户泄漏 `0.000`、summary 上下文泄漏 `0.000`，CPU 检索 P95 约 `13.9 ms`。报告将 `independently_annotated_query_count` 固定为 `0`，所以即使工程查询数达到 50，`independent_graph_gate_ready` 仍为 `false`。合成压力规模与独立金标规模不能相互替代。
+
 ## 从工程集升级为独立金标
 
 1. 先冻结查询、候选记忆和切片，再进行阈值实验，禁止用 TEST 反向调参。
 2. 每个查询至少由两名互不知晓系统排序结果的标注者给出 0–3 级相关性，并单独标注禁止召回原因。
 3. 保存原始 annotations，报告 exact agreement 和 quadratic weighted kappa；冲突由第三人裁决为 adjudicated labels。
-4. 评测运行器接受 `--annotations` 和 `--adjudicated-labels`；只有 manifest 声明 `INDEPENDENTLY_ANNOTATED`、审计完整、至少 50 个留出查询且执行最终回答评测时，才可能解除当前工程门禁。
+4. 评测运行器接受 `--annotations` 和 `--adjudicated-labels`；只有 manifest 声明 `INDEPENDENTLY_ANNOTATED`、审计完整、至少 50 个留出查询且执行最终回答评测时，才可能解除当前工程门禁。V2.4.1 的 50 条生成式压力查询不会计入这个数字。
 5. 50 例只是 GraphRAG/策略探索门槛，不是生产门槛。生产阈值仍建议至少 500 个独立标注查询，并按时间变化、危机语言、敏感信息、年龄/语言风格和长跨度切片报告。
 
 即使检索指标通过，心理医疗产品上线前仍需独立的临床安全、隐私、伦理、人因和危机升级流程评审。

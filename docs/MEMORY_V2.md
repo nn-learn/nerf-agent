@@ -142,6 +142,8 @@ V2.4 已加入 `flat evidence`、`profile-first`、`episode + freshness` 和原�
 
 当前 6 案例工程集上，真实 BGE-M3 的完整证据 Recall@5 为 `0.875`、Precision@5 为 `1.000`、nDCG@5 为 `0.947`、禁用记忆泄漏率为 `0.000`；它只是最佳离线检索臂。追加本地 `qwen3.6:latest` 最终回答评测后，答案契约遵循率为 `0.833`、错误记忆采纳率为 `0.000`。报告仍被门控为不可投产，因为数据非独立标注且只有 6 个留出查询。
 
+V2.4.1 已补充 10 用户/50 查询工程压力门：answerable recall 与 correct abstention 均为 `1.000`，禁用记忆、跨用户和 summary 上下文泄漏均为 `0.000`，CPU P95 约 `13.9 ms`。该报告单独保留 `independently_annotated_query_count=0`，因此不会用生成式压力用例解锁 GraphRAG 或生产发布门。
+
 详细指标定义、命令、独立双人标注/仲裁流程和升级门槛见 [`MEMORY_V24_EVAL_PROTOCOL.md`](MEMORY_V24_EVAL_PROTOCOL.md)。
 
 ## 后续 2.x 路线
@@ -155,7 +157,7 @@ V2.4 已加入 `flat evidence`、`profile-first`、`episode + freshness` 和原�
   V2.1 使用现有 `PSYAVATAR_TEXT_MODEL`（默认 `qwen3.6:latest`）和 Ollama 地址，不更换用户原有模型。模型成功结果只缓存在进程内，失败结果不缓存，下一次重建可以重试。切换规范化器导致签名变化时，旧 active 画像先变为 `STALE`，新画像必须重新由用户确认。
 - **V2.2（已实现）**：双时间 observation、画像有效区间、明确变化提案、历史画像、用户确认/拒绝、证据撤回失效、独立 API/UI 和专项评测。
 - **V2.3（已实现）**：离线事件摘要索引、源证据展开、派生数据级联删除，以及只影响召回排序的 freshness/decay；GraphRAG 继续由独立评测门控。
-- **V2.4（工程基线已实现）**：四臂对照、完整证据 Recall/Precision/MRR/nDCG、回答证据充分率、可选本地 Qwen 最终回答、结构化失败诊断和独立标注门禁。下一步是扩展真实双人标注留出集，而不是继续在 6 个合成案例上调参。
+- **V2.4（工程基线已实现）**：四臂对照、完整证据 Recall/Precision/MRR/nDCG、回答证据充分率、可选本地 Qwen 最终回答、结构化失败诊断、50 查询多用户压力门和独立标注计数隔离。下一步是扩展真实双人标注留出集，而不是继续在合成案例上调参。
 - **V2.5**：在隐私评审、人因评审和持出集门槛通过后，再考虑更长时间的真实用户试验。
 
 ### V2.1 当前工程验证
