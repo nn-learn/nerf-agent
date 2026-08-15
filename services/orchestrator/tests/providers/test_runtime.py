@@ -291,9 +291,14 @@ async def test_edge_tts_bridge_streams_provider_chunks() -> None:
     turn_id = "turn_1"
     token = await registry.issue(turn_id)
 
-    async def pcm_source(text: str, voice: str) -> AsyncIterator[bytes]:
+    async def pcm_source(
+        text: str,
+        voice: str,
+        rate: str,
+    ) -> AsyncIterator[bytes]:
         assert text == "慢慢说"
         assert voice == "zh-CN-XiaoxiaoNeural"
+        assert rate == "+0%"
         yield b"\x00\x00" * 320
 
     from app.providers.edge_tts import EdgeTtsProvider

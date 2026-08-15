@@ -147,6 +147,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "output_guard",
         "evidence_response_gate",
         "capability_gate",
+        "avatar_policy",
         "publish_response",
         "propose_memory",
     ]

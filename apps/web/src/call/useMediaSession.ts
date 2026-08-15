@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 
+import type { AvatarPlan } from "../realtime/protocol";
+
 import type {
   MemoryIngestionView,
   MemoryConflictView,
@@ -32,6 +34,7 @@ export interface MediaSessionController {
   microphoneEnabled: boolean;
   visionState: VisionState;
   agentState?: AgentState;
+  avatarPlan?: AvatarPlan;
   avatarTrack?: RemoteVideoTrack;
   localCameraTrack?: LocalVideoTrack;
   localPreviewStream?: MediaStream;

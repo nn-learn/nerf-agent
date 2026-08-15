@@ -11,10 +11,8 @@ import {
   type PlaybackCallbacks,
 } from "../realtime/audioPlayback";
 import { MicrophoneCapture } from "../realtime/audioCapture";
-import type {
-  RealtimeClientHandlers,
-} from "../realtime/LocalRealtimeClient";
-import type { ServerMessage } from "../realtime/protocol";
+import type { RealtimeClientHandlers } from "../realtime/LocalRealtimeClient";
+import type { AvatarPlan, ServerMessage } from "../realtime/protocol";
 import { useSessionStore } from "../state/sessionStore";
 import type { MediaSessionController } from "./useMediaSession";
 
@@ -161,6 +159,7 @@ export function useLocalRealtimeMediaSession(
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [userCaption, setUserCaption] = useState<string>();
   const [assistantCaption, setAssistantCaption] = useState<string>();
+  const [avatarPlan, setAvatarPlan] = useState<AvatarPlan>();
   const [providerLabel, setProviderLabel] = useState<string>();
   const [errorMessage, setErrorMessage] = useState<string>();
 
@@ -403,6 +402,9 @@ export function useLocalRealtimeMediaSession(
               break;
             case "assistant.response":
               setAssistantCaption(message.display_text);
+              break;
+            case "avatar.plan.ready":
+              setAvatarPlan(message);
               break;
             case "audio.start":
               audioEndedRef.current = false;
@@ -718,6 +720,7 @@ export function useLocalRealtimeMediaSession(
     microphoneEnabled,
     visionState,
     agentState,
+    avatarPlan,
     errorMessage,
     userCaption,
     assistantCaption,

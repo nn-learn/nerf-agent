@@ -4,12 +4,13 @@ from collections.abc import AsyncIterator, Callable
 from app.contracts.session import CancellationRegistry
 from app.realtime.models import PcmChunk
 
-PcmSource = Callable[[str, str], AsyncIterator[bytes]]
+PcmSource = Callable[[str, str, str], AsyncIterator[bytes]]
 
 
 async def _edge_tts_pcm_source(
     text: str,
     voice: str,
+    rate: str,
 ) -> AsyncIterator[bytes]:
     import edge_tts
 
@@ -45,7 +46,7 @@ async def _edge_tts_pcm_source(
         communicator = edge_tts.Communicate(
             text=text,
             voice=voice,
-            rate="+0%",
+            rate=rate,
             volume="+0%",
             pitch="+0Hz",
         )
@@ -130,9 +131,12 @@ class EdgeTtsProvider:
         turn_id: str,
         cancel_token: str,
         start_pts_ms: int,
+        speech_rate: float = 1.0,
     ) -> AsyncIterator[PcmChunk]:
         framer = PcmFramer()
-        async for pcm_bytes in self._pcm_source(text, self._voice):
+        rate_percent = round((min(1.1, max(0.8, speech_rate)) - 1) * 100)
+        rate = f"{rate_percent:+d}%"
+        async for pcm_bytes in self._pcm_source(text, self._voice, rate):
             if not await self._registry.is_current(turn_id, cancel_token):
                 return
             for chunk in framer.feed(

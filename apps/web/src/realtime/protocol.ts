@@ -48,11 +48,31 @@ export interface AssistantResponseMessage {
   support_mode?: string;
   risk_level?: string;
   evidence_ids?: string[];
+  memory_ids?: string[];
   visual_observation_ids?: string[];
   action_proposals?: unknown[];
   memory_candidates?: unknown[];
   avatar_style?: string;
   turn_id?: string;
+}
+
+export interface AvatarPlan {
+  policy_version: string;
+  style: string;
+  speech_rate: number;
+  initial_pause_ms: number;
+  sentence_pause_ms: number;
+  gesture_intensity: string;
+  gaze_mode: string;
+  facial_affect: string;
+  interruptible: boolean;
+  max_segment_seconds: number;
+  reason_codes: string[];
+}
+
+export interface AvatarPlanMessage extends AvatarPlan {
+  type: "avatar.plan.ready";
+  turn_id: string;
 }
 
 export interface AudioStartMessage {
@@ -133,6 +153,7 @@ export type ServerMessage =
   | TranscriptFinalMessage
   | TranscriptEmptyMessage
   | AssistantResponseMessage
+  | AvatarPlanMessage
   | AudioStartMessage
   | AudioEndMessage
   | TurnCompletedMessage
@@ -342,6 +363,7 @@ export function parseServerMessage(input: unknown): ServerMessage {
         "support_mode",
         "risk_level",
         "evidence_ids",
+        "memory_ids",
         "visual_observation_ids",
         "action_proposals",
         "memory_candidates",
@@ -353,7 +375,7 @@ export function parseServerMessage(input: unknown): ServerMessage {
         !["spoken_text", "support_mode", "risk_level", "avatar_style", "turn_id"].every(
           (key) => optionalString(value, key),
         ) ||
-        !["evidence_ids", "visual_observation_ids"].every((key) =>
+        !["evidence_ids", "memory_ids", "visual_observation_ids"].every((key) =>
           optionalStringArray(value, key),
         ) ||
         !["action_proposals", "memory_candidates"].every((key) =>
@@ -377,6 +399,9 @@ export function parseServerMessage(input: unknown): ServerMessage {
         ...(Array.isArray(value.evidence_ids)
           ? { evidence_ids: [...value.evidence_ids] as string[] }
           : {}),
+        ...(Array.isArray(value.memory_ids)
+          ? { memory_ids: [...value.memory_ids] as string[] }
+          : {}),
         ...(Array.isArray(value.visual_observation_ids)
           ? {
               visual_observation_ids: [
@@ -396,6 +421,61 @@ export function parseServerMessage(input: unknown): ServerMessage {
         ...(typeof value.turn_id === "string"
           ? { turn_id: value.turn_id }
           : {}),
+      };
+    }
+    case "avatar.plan.ready": {
+      requireExactKeys(value, [
+        "turn_id",
+        "policy_version",
+        "style",
+        "speech_rate",
+        "initial_pause_ms",
+        "sentence_pause_ms",
+        "gesture_intensity",
+        "gaze_mode",
+        "facial_affect",
+        "interruptible",
+        "max_segment_seconds",
+        "reason_codes",
+      ]);
+      requireFields(
+        value,
+        [
+          "turn_id",
+          "policy_version",
+          "style",
+          "gesture_intensity",
+          "gaze_mode",
+          "facial_affect",
+        ],
+        [
+          "speech_rate",
+          "initial_pause_ms",
+          "sentence_pause_ms",
+          "max_segment_seconds",
+        ],
+      );
+      if (
+        typeof value.interruptible !== "boolean" ||
+        !Array.isArray(value.reason_codes) ||
+        !value.reason_codes.every((item) => typeof item === "string")
+      ) {
+        return invalid();
+      }
+      return {
+        type: "avatar.plan.ready",
+        turn_id: value.turn_id as string,
+        policy_version: value.policy_version as string,
+        style: value.style as string,
+        speech_rate: value.speech_rate as number,
+        initial_pause_ms: value.initial_pause_ms as number,
+        sentence_pause_ms: value.sentence_pause_ms as number,
+        gesture_intensity: value.gesture_intensity as string,
+        gaze_mode: value.gaze_mode as string,
+        facial_affect: value.facial_affect as string,
+        interruptible: value.interruptible as boolean,
+        max_segment_seconds: value.max_segment_seconds as number,
+        reason_codes: [...value.reason_codes] as string[],
       };
     }
     case "audio.start": {

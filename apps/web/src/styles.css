@@ -241,7 +241,21 @@ a:focus-visible {
 }
 
 .mock-avatar.is-speaking .avatar-mouth {
-  animation: speak 0.42s ease-in-out infinite alternate;
+  animation: speak var(--speech-cycle, 0.42s) ease-in-out infinite alternate;
+}
+
+.mock-avatar.is-speaking[data-gesture="LOW"] .avatar-portrait {
+  animation: supportive-sway 5s ease-in-out infinite alternate;
+}
+
+.mock-avatar.avatar-style-handoff_calm .avatar-portrait {
+  animation: none;
+}
+
+@keyframes supportive-sway {
+  to {
+    transform: translateY(2px);
+  }
 }
 
 @keyframes speak {

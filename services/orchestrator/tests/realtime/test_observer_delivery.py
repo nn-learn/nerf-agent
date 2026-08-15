@@ -431,8 +431,9 @@ async def test_edge_tts_runtime_failures_degrade_to_displayed_text(
     async def failing_pcm_source(
         text: str,
         voice: str,
+        rate: str,
     ) -> AsyncIterator[bytes]:
-        _ = (text, voice)
+        _ = (text, voice, rate)
         raise error_type("TTS subprocess failed")
         yield b""
 
@@ -470,8 +471,9 @@ async def test_edge_tts_bridge_preserves_cancellation() -> None:
     async def cancelled_pcm_source(
         text: str,
         voice: str,
+        rate: str,
     ) -> AsyncIterator[bytes]:
-        _ = (text, voice)
+        _ = (text, voice, rate)
         raise asyncio.CancelledError
         yield b""
 

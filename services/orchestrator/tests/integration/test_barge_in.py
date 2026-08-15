@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from app.agent.avatar import AvatarResponsePlan
 from app.events.store import EventStore
 from app.realtime.avatar_client import AvatarRenderResult
 from app.realtime.models import TurnHandle
@@ -21,10 +22,10 @@ class BlockingAvatarClient:
         self,
         turn: TurnHandle,
         *,
-        style: str,
+        plan: AvatarResponsePlan,
         audio_chunk_count: int,
     ) -> AvatarRenderResult:
-        _ = (style, audio_chunk_count)
+        _ = (plan, audio_chunk_count)
         self.render_started.set()
         await self.release_render.wait()
         return AvatarRenderResult(frame_ids=[f"frame_{turn.turn_id}"])

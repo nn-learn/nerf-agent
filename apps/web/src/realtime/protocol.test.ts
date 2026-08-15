@@ -55,6 +55,7 @@ describe("parseServerMessage", () => {
       support_mode: "supportive",
       risk_level: "LOW",
       evidence_ids: [],
+      memory_ids: [],
       visual_observation_ids: [],
       action_proposals: [],
       memory_candidates: [],
@@ -65,6 +66,31 @@ describe("parseServerMessage", () => {
       type: "assistant.response",
       turn_id: "turn_1",
       display_text: "先慢慢说。",
+    });
+  });
+
+  it("parses the host-owned avatar response plan", () => {
+    const plan = parseServerMessage({
+      type: "avatar.plan.ready",
+      turn_id: "turn_1",
+      policy_version: "avatar-policy-v3.3",
+      style: "handoff_calm",
+      speech_rate: 0.88,
+      initial_pause_ms: 350,
+      sentence_pause_ms: 550,
+      gesture_intensity: "NONE",
+      gaze_mode: "RESPECTFUL_NEUTRAL",
+      facial_affect: "CONCERNED",
+      interruptible: true,
+      max_segment_seconds: 8,
+      reason_codes: ["RISK_AVATAR_OVERRIDE"],
+    });
+
+    expect(plan).toMatchObject({
+      type: "avatar.plan.ready",
+      style: "handoff_calm",
+      speech_rate: 0.88,
+      interruptible: true,
     });
   });
 

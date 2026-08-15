@@ -2,6 +2,7 @@ import operator
 from typing import Annotated, TypedDict
 
 from app.agent.actions import CapabilityProposalAudit
+from app.agent.avatar import AvatarResponsePlan
 from app.agent.evidence import EvidenceContextAudit, EvidenceResponseAudit
 from app.agent.models import AgentDecisionTrace, AgentDirective, IntentAssessment
 from app.safety.models import AgentResponse, RiskAssessment
@@ -21,6 +22,7 @@ class AgentState(TypedDict, total=False):
     evidence_context_audit: EvidenceContextAudit
     evidence_response_audit: EvidenceResponseAudit
     capability_audit: CapabilityProposalAudit
+    avatar_plan: AvatarResponsePlan
     long_term_memory: list[dict[str, object]]
     context: dict[str, object]
     candidate_response: AgentResponse

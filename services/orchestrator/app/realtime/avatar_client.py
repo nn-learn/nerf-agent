@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.agent.avatar import AvatarResponsePlan
 from app.realtime.models import TurnHandle
 
 
@@ -20,7 +21,7 @@ class AvatarClient(Protocol):
         self,
         turn: TurnHandle,
         *,
-        style: str,
+        plan: AvatarResponsePlan,
         audio_chunk_count: int,
     ) -> AvatarRenderResult: ...
 
@@ -44,10 +45,10 @@ class MockAvatarClient:
         self,
         turn: TurnHandle,
         *,
-        style: str,
+        plan: AvatarResponsePlan,
         audio_chunk_count: int,
     ) -> AvatarRenderResult:
-        _ = (style, audio_chunk_count)
+        _ = (plan, audio_chunk_count)
         if not self.available:
             raise AvatarUnavailable("mock Avatar worker is unavailable")
         if turn.session_id not in self._sessions:

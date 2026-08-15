@@ -39,6 +39,7 @@ class EdgeTtsAudioBridge:
         text: str,
         *,
         turn: TurnHandle,
+        speech_rate: float = 1.0,
     ) -> AsyncIterator[PcmChunk]:
         try:
             async for chunk in self._provider.synthesize(
@@ -46,6 +47,7 @@ class EdgeTtsAudioBridge:
                 turn_id=turn.turn_id,
                 cancel_token=turn.cancel_token,
                 start_pts_ms=0,
+                speech_rate=speech_rate,
             ):
                 yield chunk
         except (RuntimeError, OSError) as error:

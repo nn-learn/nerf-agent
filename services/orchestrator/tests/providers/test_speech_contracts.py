@@ -93,8 +93,8 @@ async def test_edge_tts_keeps_xiaoxiao_voice_and_stops_on_cancellation() -> None
     """Catches voice drift and stale synthesized audio after barge-in."""
     captured: dict[str, str] = {}
 
-    async def pcm_source(text: str, voice: str) -> AsyncIterator[bytes]:
-        captured.update(text=text, voice=voice)
+    async def pcm_source(text: str, voice: str, rate: str) -> AsyncIterator[bytes]:
+        captured.update(text=text, voice=voice, rate=rate)
         yield b"\x01\x00" * 320
         yield b"\x02\x00" * 320
 
@@ -109,6 +109,7 @@ async def test_edge_tts_keeps_xiaoxiao_voice_and_stops_on_cancellation() -> None
         turn_id="turn_1",
         cancel_token=token,
         start_pts_ms=2_000,
+        speech_rate=0.88,
     )
 
     first = await anext(stream)
@@ -116,6 +117,7 @@ async def test_edge_tts_keeps_xiaoxiao_voice_and_stops_on_cancellation() -> None
     remaining = [chunk async for chunk in stream]
 
     assert captured["voice"] == "zh-CN-XiaoxiaoNeural"
+    assert captured["rate"] == "-12%"
     assert first.pts_ms == 2_000
     assert remaining == []
 

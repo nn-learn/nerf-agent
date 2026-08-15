@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.agent.avatar import AvatarResponsePlan
 from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
 from app.graph.build import GraphDependencies, MemoryContextLoader, build_graph
@@ -113,6 +114,7 @@ class AudioBridge(Protocol):
         text: str,
         *,
         turn: TurnHandle,
+        speech_rate: float = 1.0,
     ) -> AsyncIterator[PcmChunk]: ...
 
 
@@ -142,8 +144,9 @@ class MockAudioBridge:
         text: str,
         *,
         turn: TurnHandle,
+        speech_rate: float = 1.0,
     ) -> AsyncIterator[PcmChunk]:
-        _ = (text, turn)
+        _ = (text, turn, speech_rate)
         if not self.available:
             raise AudioUnavailable("mock TTS provider is unavailable")
         yield PcmChunk(
@@ -461,6 +464,7 @@ class SessionManager:
         )
         risk = cast(RiskAssessment, graph_result["risk"])
         response = cast(AgentResponse, graph_result["response"])
+        avatar_plan = cast(AvatarResponsePlan, graph_result["avatar_plan"])
         raw_metrics = graph_result.get("provider_metrics", {})
         agent_metrics: dict[str, object] = {}
         if isinstance(raw_metrics, dict):
@@ -490,6 +494,34 @@ class SessionManager:
             observer=observer,
         ):
             return self._interrupted_result(active, risk=risk, response=response)
+        for event_type, raw_payload in (
+            ("agent.decision.completed", graph_result.get("agent_trace")),
+            (
+                "evidence.context.completed",
+                graph_result.get("evidence_context_audit"),
+            ),
+            (
+                "evidence.response.completed",
+                graph_result.get("evidence_response_audit"),
+            ),
+            (
+                "capability.policy.completed",
+                graph_result.get("capability_audit"),
+            ),
+        ):
+            payload = (
+                raw_payload.model_dump(mode="json")
+                if isinstance(raw_payload, BaseModel)
+                else {}
+            )
+            if not await self._emit_current(
+                runtime,
+                active,
+                event_type,
+                payload,
+                observer=observer,
+            ):
+                return self._interrupted_result(active, risk=risk, response=response)
         if not await self._emit_current(
             runtime,
             active,
@@ -511,6 +543,14 @@ class SessionManager:
                     )
                 ),
             },
+            observer=observer,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
+        if not await self._emit_current(
+            runtime,
+            active,
+            "avatar.plan.ready",
+            avatar_plan.model_dump(mode="json"),
             observer=observer,
         ):
             return self._interrupted_result(active, risk=risk, response=response)
@@ -541,6 +581,7 @@ class SessionManager:
                 async for chunk in self._audio.synthesize(
                     response.spoken_text,
                     turn=turn,
+                    speech_rate=avatar_plan.speech_rate,
                 ):
                     if first_chunk_ns is None:
                         first_chunk_ns = time.perf_counter_ns()
@@ -616,7 +657,7 @@ class SessionManager:
                 try:
                     avatar_result = await self._avatar.render(
                         turn,
-                        style=response.avatar_style,
+                        plan=avatar_plan,
                         audio_chunk_count=audio_chunk_count,
                     )
                 except AvatarUnavailable:

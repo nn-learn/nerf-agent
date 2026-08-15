@@ -38,6 +38,7 @@ normalize_input
   -> output_guard
   -> evidence_response_gate
   -> capability_gate
+  -> avatar_policy
 ```
 
 当前意图包括一般支持、情绪表达、心理教育、应对练习、记忆召回、记忆控制和人工接管。风险等级始终覆盖意图：危机轮次禁止读取长期记忆和普通 RAG，正常模型路径不会运行。
@@ -70,9 +71,22 @@ reviewed RAG 与 governed Memory 进入模型前由统一证据层规范化：
 - 伪造、越界或缺失的必需引用在发布前触发确定性降级，不把未经核验的模型回答交给用户；
 - evidence audit 只记录数量、状态和 reason code，不保存检索文本或用户记忆内容。
 
+## V3.3：数字人响应计划
+
+模型输出的 `avatar_style` 现在只是建议，真正发布的非语言行为由独立 `AvatarPolicy` 生成。每轮都会产生 `AvatarResponsePlan`：
+
+- 语速、首句停顿、句间停顿和最长分段；
+- 动作强度、注视模式、面部情绪和可打断性；
+- RED/EMERGENCY 强制 `handoff_calm`、低刺激、无手势、慢语速和短分段；
+- AMBER 使用克制的关切表达，呼吸练习使用更慢节奏和引导式注视；
+- 证据拒答采用中性倾听风格，避免用热情动作弱化“不确定性”。
+
+本地 Edge TTS 已实际消费 `speech_rate`，例如危机计划的 `0.88` 映射为 `-12%`；Avatar client 接收完整 plan。浏览器演示数字人也消费 plan 的 style、gesture 和语速，所有计划保持可被用户随时打断。
+
+Session 时间线新增内容无关的 decision、evidence、capability 和 avatar 事件，临床视图只暴露枚举、数量和 reason code，不暴露 transcript、RAG 文本或记忆文本。
+
 ## 后续阶段
 
-- **V3.3**：生成独立 AvatarResponsePlan，约束语速、停顿、动作强度、注视和可打断性；危机表达不采用娱乐化动作。
 - **V3.4**：构建跨层场景集，分别评估意图、风险覆盖、证据拒答、禁止能力、trace 完整性、数字人安全与端到端延迟。
 
 ## 设计依据

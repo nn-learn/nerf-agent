@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type FormEvent,
   useEffect,
   useRef,
@@ -14,6 +15,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
+
+import type { AvatarPlan } from "../realtime/protocol";
 
 import { CallControls } from "./CallControls";
 import { CameraConsent } from "./CameraConsent";
@@ -58,12 +61,23 @@ function PreviewStream({ stream }: { stream: MediaStream }) {
   return <video autoPlay className="self-preview-video" muted playsInline ref={ref} />;
 }
 
-function MockAvatar({ speaking }: { speaking: boolean }) {
+function MockAvatar({
+  plan,
+  speaking,
+}: {
+  plan?: AvatarPlan;
+  speaking: boolean;
+}) {
+  const style = plan?.style ?? "neutral_listening";
+  const speechCycle = plan ? 0.42 / plan.speech_rate : 0.42;
   return (
     <div
       aria-label="数字人小澄演示形象"
-      className={`mock-avatar ${speaking ? "is-speaking" : ""}`}
+      className={`mock-avatar avatar-style-${style} ${speaking ? "is-speaking" : ""}`}
+      data-avatar-style={style}
+      data-gesture={plan?.gesture_intensity ?? "NONE"}
       role="img"
+      style={{ "--speech-cycle": `${speechCycle}s` } as CSSProperties}
     >
       <div className="avatar-ambient avatar-ambient-one" />
       <div className="avatar-ambient avatar-ambient-two" />
@@ -281,7 +295,10 @@ export function CallPage({ media, demoMode = true }: CallPageProps) {
               track={media.avatarTrack}
             />
           ) : (
-            <MockAvatar speaking={media.agentState === "speaking"} />
+            <MockAvatar
+              plan={media.avatarPlan}
+              speaking={media.agentState === "speaking"}
+            />
           )}
 
           <div className="avatar-identity">

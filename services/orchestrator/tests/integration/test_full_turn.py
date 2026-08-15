@@ -88,7 +88,12 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "vision.observation.ready",
         "provider.agent.metrics",
         "risk.updated",
+        "agent.decision.completed",
+        "evidence.context.completed",
+        "evidence.response.completed",
+        "capability.policy.completed",
         "retrieval.completed",
+        "avatar.plan.ready",
         "assistant.response.ready",
         "tts.audio.chunk",
         "provider.tts.metrics",
@@ -106,6 +111,12 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
     assert {
         event.trace_id for event in turn_events if event.type in traced_types
     } == {result.trace_id}
+    avatar_plan_event = next(
+        event for event in turn_events if event.type == "avatar.plan.ready"
+    )
+    assert avatar_plan_event.payload["interruptible"] is True
+    assert result.response is not None
+    assert avatar_plan_event.payload["style"] == result.response.avatar_style
 
 
 @pytest.mark.asyncio
