@@ -85,9 +85,22 @@ reviewed RAG 与 governed Memory 进入模型前由统一证据层规范化：
 
 Session 时间线新增内容无关的 decision、evidence、capability 和 avatar 事件，临床视图只暴露枚举、数量和 reason code，不暴露 transcript、RAG 文本或记忆文本。
 
-## 后续阶段
+## V3.4：跨层评测与发布门
 
-- **V3.4**：构建跨层场景集，分别评估意图、风险覆盖、证据拒答、禁止能力、trace 完整性、数字人安全与端到端延迟。
+V3.4 提供 31 个可重复的工程场景，覆盖 support、emotion、RAG、Memory、危机覆盖、引用攻击、能力越权、审批、预算、隐私 trace 和数字人行为。评测不使用同一个 LLM 自评，而是直接核对确定性控制契约。
+
+运行：
+
+```powershell
+cd services/orchestrator
+.\.venv\Scripts\python.exe -m app.evals.run_agent_v3
+```
+
+当前固定工程集结论是 `ENGINEERING_DEMO_COMPLETE`、`demo_ready=true`、`production_ready=false`。生产门保持关闭，直到独立标注数据、临床安全、隐私官、独立红队、可访问性、危机演练、部署数据库审计和代表设备延迟测试全部完成。完整结果和指标定义见 [AGENT_V3_EVALUATION.md](./AGENT_V3_EVALUATION.md)。
+
+## V3 完成边界
+
+V3 已完成可演示、可重复验证的工程基线。它不是医疗器械认证、临床有效性证明或生产部署许可。会话事件库目前仍包含业务所需的 `transcript.final`，V3 策略 trace 本身无内容且临床视图会脱敏；生产前仍必须明确部署侧的加密、留存、删除、访问审计和数据处理法律基础。
 
 ## 设计依据
 

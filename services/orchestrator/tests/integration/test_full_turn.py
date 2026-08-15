@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -117,6 +119,23 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
     assert avatar_plan_event.payload["interruptible"] is True
     assert result.response is not None
     assert avatar_plan_event.payload["style"] == result.response.avatar_style
+    policy_event_types = {
+        "agent.decision.completed",
+        "evidence.context.completed",
+        "evidence.response.completed",
+        "capability.policy.completed",
+        "avatar.plan.ready",
+    }
+    policy_payloads = json.dumps(
+        [
+            event.payload
+            for event in turn_events
+            if event.type in policy_event_types
+        ],
+        ensure_ascii=False,
+    )
+    assert "最近工作压力" not in policy_payloads
+    assert "睡眠记录卡" not in policy_payloads
 
 
 @pytest.mark.asyncio
