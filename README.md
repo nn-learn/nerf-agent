@@ -117,7 +117,9 @@ V2.5 已补齐发布治理：物理删除残留探针会扫描 SQLite/WAL/SHM；
 
 ## Agent V3 安全决策层
 
-V3.0 已把确定性 Control Plane 接入 LangGraph：风险覆盖意图，意图决定 reviewed RAG、governed Memory 与 capability 的访问范围；需要知识或记忆但证据不足时直接确定性拒答。普通情绪支持不再无条件运行 BGE-M3，危机轮次继续完全绕过普通检索和正常 LLM。架构、reason code 与 V3.1–V3.4 路线见 [`docs/AGENT_V3.md`](docs/AGENT_V3.md)。
+Agent V3.0–V3.4 已完成工程闭环：确定性风险覆盖意图，意图限制 reviewed RAG、governed Memory 和 capability；统一证据层过滤未确认/冲突来源并校验 `evidence_ids` 与 `memory_ids`；类型化能力注册表执行信任、审批、预算和幂等边界；独立 AvatarPolicy 控制 TTS 语速、动作、注视和危机低刺激表达。普通情绪支持不再无条件运行 BGE-M3，危机轮次完全绕过普通检索和正常 LLM。
+
+当前 31 个跨层工程场景全部通过，发布门返回 `ENGINEERING_DEMO_COMPLETE` 和 `demo_ready=true`，同时因独立标注、临床/隐私签署、红队、可访问性与危机演练尚未完成而保持 `production_ready=false`。架构与边界见 [`docs/AGENT_V3.md`](docs/AGENT_V3.md)，指标与复现命令见 [`docs/AGENT_V3_EVALUATION.md`](docs/AGENT_V3_EVALUATION.md)。
 
 ## 最快 mock 演示（无 GPU）
 
@@ -194,6 +196,7 @@ Set-Location services\avatar_radnerf
 - RAD-NeRF worker 的 CPU 协议测试（GPU smoke 明确跳过）
 - Web 单元测试和生产构建
 - 固定风险与视觉安全报告
+- Agent V3 跨层场景、隐私 trace 与 fail-closed 发布门
 
 当前固定集要求：
 

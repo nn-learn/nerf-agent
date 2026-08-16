@@ -65,6 +65,10 @@ Invoke-Verification "Fixed acceptance report" $orchestratorRoot {
         --risk (Join-Path $projectRoot "evals\risk_cases.jsonl") `
         --vision (Join-Path $projectRoot "evals\vision_cases.jsonl")
 }
+Invoke-Verification "Agent V3 release gate" $orchestratorRoot {
+    & $python -m app.evals.run_agent_v3 `
+        --cases (Join-Path $projectRoot "evals\agent_v3_cases.jsonl")
+}
 
 Write-Host "`nOptional browser E2E and CUDA smoke are not run by the zero-GPU baseline."
 Write-Host "Verification complete."

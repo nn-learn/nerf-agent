@@ -31,7 +31,7 @@
 | Trace content leakage rate | 0.000 | 0.000 |
 | Avatar policy accuracy | 1.000 | 1.000 |
 | Crisis avatar safety rate | 1.000 | 1.000 |
-| Control-plane p95 | 0.0989 ms | ≤ 50 ms |
+| Control-plane p95 | 0.1018 ms | ≤ 50 ms |
 
 p95 只测纯本地确定性控制逻辑，不包含 Ollama、BGE-M3、STT、TTS、网络或数字人渲染耗时，不应被解释为端到端实时延迟。
 
