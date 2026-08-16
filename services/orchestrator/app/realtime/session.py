@@ -12,6 +12,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.agent.avatar import AvatarResponsePlan
+from app.agent.care import CareLoopState
 from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
 from app.graph.build import GraphDependencies, MemoryContextLoader, build_graph
@@ -169,6 +170,7 @@ class SessionRuntime:
     access_token_digest: str
     event_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn: ActiveTurn | None = None
+    care_loop_state: CareLoopState = field(default_factory=CareLoopState)
 
 
 class SessionManager:
@@ -459,12 +461,20 @@ class SessionManager:
                 "visual_summary": effective_visual_summary,
                 "turn_id": turn.turn_id,
                 "cancel_token": turn.cancel_token,
+                "care_loop_state": runtime.care_loop_state.model_copy(deep=True),
                 "visited": [],
             }
         )
         risk = cast(RiskAssessment, graph_result["risk"])
         response = cast(AgentResponse, graph_result["response"])
         avatar_plan = cast(AvatarResponsePlan, graph_result["avatar_plan"])
+        care_loop_state = cast(CareLoopState, graph_result["care_loop_state"])
+        if not await self._commit_care_state_current(
+            runtime,
+            active,
+            care_loop_state,
+        ):
+            return self._interrupted_result(active, risk=risk, response=response)
         raw_metrics = graph_result.get("provider_metrics", {})
         agent_metrics: dict[str, object] = {}
         if isinstance(raw_metrics, dict):
@@ -496,6 +506,7 @@ class SessionManager:
             return self._interrupted_result(active, risk=risk, response=response)
         for event_type, raw_payload in (
             ("agent.decision.completed", graph_result.get("agent_trace")),
+            ("care.loop.transitioned", graph_result.get("care_loop_trace")),
             (
                 "evidence.context.completed",
                 graph_result.get("evidence_context_audit"),
@@ -769,6 +780,7 @@ class SessionManager:
             if runtime.descriptor.status is SessionStatus.ENDED:
                 return runtime.descriptor.model_copy(deep=True)
             runtime.descriptor.status = SessionStatus.ENDED
+            runtime.care_loop_state = CareLoopState()
             await self.store.append_payload(
                 session_id=session_id,
                 event_type="session.ended",
@@ -839,6 +851,23 @@ class SessionManager:
             ):
                 return False
             await observer.on_event(active.handle, event_type, payload)
+            return True
+
+    async def _commit_care_state_current(
+        self,
+        runtime: SessionRuntime,
+        active: ActiveTurn,
+        care_loop_state: CareLoopState,
+    ) -> bool:
+        async with runtime.event_lock:
+            if runtime.active_turn is not active:
+                return False
+            if not await self._coordinator.tokens.is_current(
+                active.handle.turn_id,
+                active.handle.cancel_token,
+            ):
+                return False
+            runtime.care_loop_state = care_loop_state.model_copy(deep=True)
             return True
 
     async def _observe_current(

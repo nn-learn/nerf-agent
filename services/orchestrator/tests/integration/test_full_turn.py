@@ -91,6 +91,7 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "provider.agent.metrics",
         "risk.updated",
         "agent.decision.completed",
+        "care.loop.transitioned",
         "evidence.context.completed",
         "evidence.response.completed",
         "capability.policy.completed",
@@ -121,6 +122,7 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
     assert avatar_plan_event.payload["style"] == result.response.avatar_style
     policy_event_types = {
         "agent.decision.completed",
+        "care.loop.transitioned",
         "evidence.context.completed",
         "evidence.response.completed",
         "capability.policy.completed",

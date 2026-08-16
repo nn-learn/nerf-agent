@@ -140,6 +140,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "partial_risk",
         "final_risk",
         "intent_policy",
+        "care_loop",
         "context_fetch",
         "evidence_prepare",
         "decision_gate",
@@ -155,6 +156,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
     assert provider.reply_call == ("turn_1", "ct_1", RiskLevel.GREEN)
     assert result["response"].support_mode == "listen"
     assert result["provider_metrics"] == {"provider": "recording_normal"}
+    assert result["care_loop_state"].turn_count == 1
 
 
 @pytest.mark.asyncio

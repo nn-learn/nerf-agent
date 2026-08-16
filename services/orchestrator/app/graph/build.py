@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.actions import CapabilityProposalGate
 from app.agent.avatar import AvatarPolicy
+from app.agent.care import CareLoopPolicy
 from app.agent.control import AgentControlPlane
 from app.agent.evidence import EvidenceOrchestrator
 from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
@@ -35,6 +36,7 @@ class GraphDependencies:
         default_factory=EvidenceOrchestrator
     )
     avatar_policy: AvatarPolicy = field(default_factory=AvatarPolicy)
+    care_loop_policy: CareLoopPolicy = field(default_factory=CareLoopPolicy)
 
     @classmethod
     def for_mock(cls) -> "GraphDependencies":
@@ -76,6 +78,19 @@ def build_graph(
             _, trace = dependencies.control_plane.finalize(directive, {})
             result["agent_trace"] = trace
         return result
+
+    def care_loop(state: AgentState) -> dict[str, object]:
+        care_state, trace = dependencies.care_loop_policy.advance(
+            state.get("care_loop_state"),
+            transcript=state["transcript"],
+            risk=state["risk"],
+            intent=state["intent"].intent,
+        )
+        return {
+            "care_loop_state": care_state,
+            "care_loop_trace": trace,
+            "visited": ["care_loop"],
+        }
 
     async def context_fetch(state: AgentState) -> dict[str, object]:
         context = await dependencies.agent_provider.load_context(
@@ -133,6 +148,7 @@ def build_graph(
         )
         context = dict(state["context"])
         context["agent_control"] = directive.model_dump(mode="json")
+        context["care_loop"] = state["care_loop_state"].model_dump(mode="json")
         return {
             "agent_directive": directive,
             "agent_trace": trace,
@@ -269,6 +285,7 @@ def build_graph(
     builder.add_node("partial_risk", partial_risk)
     builder.add_node("final_risk", final_risk)
     builder.add_node("intent_policy", intent_policy)
+    builder.add_node("care_loop", care_loop)
     builder.add_node("context_fetch", context_fetch)
     builder.add_node("evidence_prepare", evidence_prepare)
     builder.add_node("decision_gate", decision_gate)
@@ -285,7 +302,8 @@ def build_graph(
     builder.add_edge("normalize_input", "partial_risk")
     builder.add_edge("partial_risk", "final_risk")
     builder.add_edge("final_risk", "intent_policy")
-    builder.add_conditional_edges("intent_policy", route_after_intent)
+    builder.add_edge("intent_policy", "care_loop")
+    builder.add_conditional_edges("care_loop", route_after_intent)
     builder.add_edge("context_fetch", "evidence_prepare")
     builder.add_edge("evidence_prepare", "decision_gate")
     builder.add_conditional_edges("decision_gate", route_after_decision)
