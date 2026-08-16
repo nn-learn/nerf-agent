@@ -15,6 +15,7 @@ from app.agent.interventions import (
     InterventionProposal,
     InterventionRuntimeState,
 )
+from app.agent.longitudinal import CareTelemetrySnapshot, LongitudinalCareState
 from app.agent.models import AgentDecisionTrace, AgentDirective, IntentAssessment
 from app.safety.models import AgentResponse, RiskAssessment
 
@@ -42,6 +43,8 @@ class AgentState(TypedDict, total=False):
     intervention_consent_state: InterventionConsentState
     intervention_consent_audit: InterventionConsentAudit
     intervention_action_consent_audit: InterventionActionConsentAudit
+    longitudinal_state: LongitudinalCareState
+    care_telemetry: CareTelemetrySnapshot
     long_term_memory: list[dict[str, object]]
     context: dict[str, object]
     candidate_response: AgentResponse

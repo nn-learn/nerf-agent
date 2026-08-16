@@ -3,7 +3,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from app.agent.care import CareLoopState
+from app.agent.care import CareLoopState, CarePhase
 from app.agent.interventions import InterventionKind, InterventionProposal
 from app.agent.models import AgentDirective
 from app.safety.models import AgentResponse, RiskLevel
@@ -208,6 +208,39 @@ class InterventionConsentPolicy:
             state,
             ConsentSignal.STOP,
             [reason_code],
+        )
+
+    @staticmethod
+    def reconcile_care(
+        care: CareLoopState,
+        consent: InterventionConsentState,
+        *,
+        previous_status: InterventionConsentStatus,
+    ) -> CareLoopState:
+        next_phase = care.phase
+        if consent.status is InterventionConsentStatus.ACTIVE:
+            next_phase = CarePhase.PRACTICE
+        elif consent.status is InterventionConsentStatus.COMPLETED:
+            next_phase = CarePhase.REFLECT
+        elif consent.status in {
+            InterventionConsentStatus.DECLINED,
+            InterventionConsentStatus.EXPIRED,
+        }:
+            next_phase = CarePhase.LISTEN
+        elif consent.status is InterventionConsentStatus.CANCELLED:
+            next_phase = (
+                CarePhase.REFLECT
+                if previous_status in {
+                    InterventionConsentStatus.ACCEPTED,
+                    InterventionConsentStatus.ACTIVE,
+                }
+                else CarePhase.LISTEN
+            )
+        if next_phase is care.phase:
+            return care.model_copy(deep=True)
+        return care.model_copy(
+            deep=True,
+            update={"phase": next_phase, "phase_turn_count": 1},
         )
 
     @staticmethod

@@ -98,6 +98,7 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "evidence.response.completed",
         "capability.policy.completed",
         "intervention.consent.action_checked",
+        "care.telemetry.observed",
         "retrieval.completed",
         "avatar.plan.ready",
         "assistant.response.ready",
@@ -132,6 +133,7 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "evidence.response.completed",
         "capability.policy.completed",
         "intervention.consent.action_checked",
+        "care.telemetry.observed",
         "avatar.plan.ready",
     }
     policy_payloads = json.dumps(

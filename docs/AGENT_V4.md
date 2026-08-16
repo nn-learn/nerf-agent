@@ -30,7 +30,6 @@ final_risk -> intent_policy -> care_loop
 
 ## 后续阶段
 
-- V4.3：仅依赖用户主动反馈的效果信号，以及无原始心理内容的纵向漂移监测；
 - V4.4：多轮情景评测、隐私泄漏门、危机覆盖门和 fail-closed 发布报告。
 
 ## V4.1：受控干预目录与选择账本
@@ -44,6 +43,12 @@ V4.1 新增 host-owned `InterventionCatalog`。目录当前包含反映式倾听
 需要同意的干预采用 `OFFERED -> ACCEPTED -> ACTIVE -> COMPLETED` 两阶段授权。初次提出“带我呼吸”只形成待确认 offer；下一轮只有在该 offer 尚未过期时，明确的接受表达才会把精确 capability 临时加入控制面 allowlist。模型不能用首轮 action proposal 绕过同意门。
 
 `DECLINED`、`CANCELLED` 和 `EXPIRED` 都是 fail-closed 终态。用户说“停止”、危机覆盖或实时 barge-in 会撤销待确认或进行中的 scope。短词“好”只在已有待确认 offer 时解析为接受，在空闲状态下没有授权含义。动作发布前的独立 consent gate 还会再次核对 capability 与 scope；通过后只标为 `APPROVED`，实际执行仍由工具层负责。
+
+## V4.3：用户自报反馈与内容无关漂移监测
+
+V4.3 只在某项干预已经进入 `ACTIVE`、`COMPLETED` 或 `CANCELLED` scope 后，识别用户明确说出的“有帮助”“没帮助”或“跳过反馈”。系统不从摄像头、表情、注视、声音、语速或生理信号推断疗效，也不把帮助度解释为临床结局。
+
+会话级 `LongitudinalCareState` 聚合阶段转换、危机覆盖、拒答、证据/能力/干预阻断、同意终态和用户自报反馈的计数。漂移规则覆盖重复策略阻断、选择/练习阶段停滞、连续用户自报无帮助、高拒答比例和重复危机覆盖。`care.telemetry.observed` 使用固定字段发布操作名、阶段、风险、同意状态、比率与 drift flag，并显式声明未记录原始内容、未使用视觉或音频结果推断。
 
 ## 设计依据
 

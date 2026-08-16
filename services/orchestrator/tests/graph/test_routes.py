@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from app.agent.care import CarePhase
 from app.agent.intervention_consent import InterventionConsentStatus
 from app.graph.build import GraphDependencies, build_graph
 from app.providers.protocols import AgentPlan
@@ -177,6 +178,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "evidence_response_gate",
         "capability_gate",
         "intervention_action_consent_gate",
+        "longitudinal_observe",
         "avatar_policy",
         "publish_response",
         "propose_memory",
@@ -187,6 +189,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
     assert result["provider_metrics"] == {"provider": "recording_normal"}
     assert result["care_loop_state"].turn_count == 1
     assert result["intervention_proposal"].kind == "REFLECTIVE_LISTENING"
+    assert result["care_telemetry"].raw_content_recorded is False
 
 
 @pytest.mark.asyncio
@@ -325,16 +328,19 @@ async def test_graph_requires_second_turn_consent_before_breathing_action() -> N
             "intervention_consent_state": first[
                 "intervention_consent_state"
             ],
+            "longitudinal_state": first["longitudinal_state"],
             "visited": [],
         }
     )
     assert second["intervention_consent_state"].status is (
         InterventionConsentStatus.ACTIVE
     )
+    assert second["care_loop_state"].phase is CarePhase.PRACTICE
     assert second["response"].action_proposals[0]["status"] == "APPROVED"
     assert second["response"].action_proposals[0]["consent_scope"] == (
         "EXACT_PENDING_INTERVENTION"
     )
+    assert second["longitudinal_state"].intervention_authorized_count == 1
 
 
 @pytest.mark.asyncio

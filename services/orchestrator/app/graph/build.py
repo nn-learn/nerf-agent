@@ -15,6 +15,7 @@ from app.agent.intervention_consent import (
     InterventionConsentPolicy,
 )
 from app.agent.interventions import InterventionPolicy
+from app.agent.longitudinal import LongitudinalCareState, LongitudinalObserver
 from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
 from app.graph.state import AgentState
 from app.providers.mock import MockAgentProvider
@@ -50,6 +51,9 @@ class GraphDependencies:
     )
     intervention_action_consent_gate: InterventionActionConsentGate = field(
         default_factory=InterventionActionConsentGate
+    )
+    longitudinal_observer: LongitudinalObserver = field(
+        default_factory=LongitudinalObserver
     )
 
     @classmethod
@@ -200,6 +204,12 @@ def build_graph(
         context["intervention_consent"] = state[
             "intervention_consent_state"
         ].model_dump(mode="json")
+        longitudinal = state.get("longitudinal_state")
+        context["longitudinal_summary"] = (
+            longitudinal.model_dump(mode="json")
+            if longitudinal is not None
+            else LongitudinalCareState().model_dump(mode="json")
+        )
         return {
             "agent_directive": directive,
             "agent_trace": trace,
@@ -309,11 +319,53 @@ def build_graph(
                 current_turn=state["care_loop_state"].turn_count,
             )
         )
+        care = dependencies.intervention_consent_policy.reconcile_care(
+            state["care_loop_state"],
+            consent,
+            previous_status=state[
+                "intervention_consent_audit"
+            ].previous_status,
+        )
+        care_trace = state["care_loop_trace"]
+        if care.phase is not care_trace.next_phase:
+            care_trace = care_trace.model_copy(
+                deep=True,
+                update={
+                    "next_phase": care.phase,
+                    "phase_turn_count": care.phase_turn_count,
+                    "reason_codes": [
+                        *care_trace.reason_codes,
+                        "INTERVENTION_LIFECYCLE_PHASE_RECONCILED",
+                    ],
+                },
+            )
         return {
             "response": response,
             "intervention_consent_state": consent,
             "intervention_action_consent_audit": audit,
+            "care_loop_state": care,
+            "care_loop_trace": care_trace,
             "visited": ["intervention_action_consent_gate"],
+        }
+
+    def longitudinal_observe(state: AgentState) -> dict[str, object]:
+        longitudinal, telemetry = dependencies.longitudinal_observer.observe(
+            state.get("longitudinal_state"),
+            transcript=state["transcript"],
+            care=state["care_loop_state"],
+            care_trace=state["care_loop_trace"],
+            directive=state["agent_directive"],
+            consent=state["intervention_consent_state"],
+            consent_audit=state["intervention_consent_audit"],
+            intervention_audit=state["intervention_policy_audit"],
+            action_consent_audit=state["intervention_action_consent_audit"],
+            evidence_audit=state.get("evidence_response_audit"),
+            capability_audit=state.get("capability_audit"),
+        )
+        return {
+            "longitudinal_state": longitudinal,
+            "care_telemetry": telemetry,
+            "visited": ["longitudinal_observe"],
         }
 
     def evidence_response_gate(state: AgentState) -> dict[str, object]:
@@ -369,6 +421,7 @@ def build_graph(
         "intervention_action_consent_gate",
         intervention_action_consent_gate,
     )
+    builder.add_node("longitudinal_observe", longitudinal_observe)
     builder.add_node("avatar_policy", avatar_policy)
     builder.add_node("publish_response", publish_response)
     builder.add_node("propose_memory", propose_memory)
@@ -389,7 +442,8 @@ def build_graph(
     builder.add_edge("output_guard", "evidence_response_gate")
     builder.add_edge("evidence_response_gate", "capability_gate")
     builder.add_edge("capability_gate", "intervention_action_consent_gate")
-    builder.add_edge("intervention_action_consent_gate", "avatar_policy")
+    builder.add_edge("intervention_action_consent_gate", "longitudinal_observe")
+    builder.add_edge("longitudinal_observe", "avatar_policy")
     builder.add_edge("avatar_policy", "publish_response")
     builder.add_edge("publish_response", "propose_memory")
     builder.add_edge("propose_memory", END)

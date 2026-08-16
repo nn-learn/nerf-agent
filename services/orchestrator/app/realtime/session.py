@@ -18,6 +18,7 @@ from app.agent.intervention_consent import (
     InterventionConsentState,
 )
 from app.agent.interventions import InterventionRuntimeState
+from app.agent.longitudinal import LongitudinalCareState
 from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
 from app.graph.build import GraphDependencies, MemoryContextLoader, build_graph
@@ -181,6 +182,9 @@ class SessionRuntime:
     )
     intervention_consent_state: InterventionConsentState = field(
         default_factory=InterventionConsentState
+    )
+    longitudinal_state: LongitudinalCareState = field(
+        default_factory=LongitudinalCareState
     )
 
 
@@ -481,6 +485,9 @@ class SessionManager:
                 "intervention_consent_state": (
                     runtime.intervention_consent_state.model_copy(deep=True)
                 ),
+                "longitudinal_state": runtime.longitudinal_state.model_copy(
+                    deep=True
+                ),
                 "visited": [],
             }
         )
@@ -496,12 +503,17 @@ class SessionManager:
             InterventionConsentState,
             graph_result["intervention_consent_state"],
         )
+        longitudinal_state = cast(
+            LongitudinalCareState,
+            graph_result["longitudinal_state"],
+        )
         if not await self._commit_policy_state_current(
             runtime,
             active,
             care_loop_state,
             intervention_state,
             intervention_consent_state,
+            longitudinal_state,
         ):
             return self._interrupted_result(active, risk=risk, response=response)
         raw_metrics = graph_result.get("provider_metrics", {})
@@ -560,6 +572,7 @@ class SessionManager:
                 "intervention.consent.action_checked",
                 graph_result.get("intervention_action_consent_audit"),
             ),
+            ("care.telemetry.observed", graph_result.get("care_telemetry")),
         ):
             payload = (
                 raw_payload.model_dump(mode="json")
@@ -801,6 +814,15 @@ class SessionManager:
                 )
             )
             runtime.intervention_consent_state = consent_state
+            runtime.care_loop_state = (
+                self._intervention_consent.reconcile_care(
+                    runtime.care_loop_state,
+                    consent_state,
+                    previous_status=consent_audit.previous_status,
+                )
+                if consent_audit is not None
+                else runtime.care_loop_state
+            )
             if consent_audit is not None:
                 await self.store.append_payload(
                     session_id=session_id,
@@ -840,6 +862,7 @@ class SessionManager:
             runtime.care_loop_state = CareLoopState()
             runtime.intervention_state = InterventionRuntimeState()
             runtime.intervention_consent_state = InterventionConsentState()
+            runtime.longitudinal_state = LongitudinalCareState()
             await self.store.append_payload(
                 session_id=session_id,
                 event_type="session.ended",
@@ -919,6 +942,7 @@ class SessionManager:
         care_loop_state: CareLoopState,
         intervention_state: InterventionRuntimeState,
         intervention_consent_state: InterventionConsentState,
+        longitudinal_state: LongitudinalCareState,
     ) -> bool:
         async with runtime.event_lock:
             if runtime.active_turn is not active:
@@ -933,6 +957,7 @@ class SessionManager:
             runtime.intervention_consent_state = (
                 intervention_consent_state.model_copy(deep=True)
             )
+            runtime.longitudinal_state = longitudinal_state.model_copy(deep=True)
             return True
 
     async def _observe_current(
