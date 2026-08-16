@@ -10,6 +10,10 @@ from app.agent.avatar import AvatarPolicy
 from app.agent.care import CareLoopPolicy
 from app.agent.control import AgentControlPlane
 from app.agent.evidence import EvidenceOrchestrator
+from app.agent.intervention_consent import (
+    InterventionActionConsentGate,
+    InterventionConsentPolicy,
+)
 from app.agent.interventions import InterventionPolicy
 from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
 from app.graph.state import AgentState
@@ -40,6 +44,12 @@ class GraphDependencies:
     care_loop_policy: CareLoopPolicy = field(default_factory=CareLoopPolicy)
     intervention_policy: InterventionPolicy = field(
         default_factory=InterventionPolicy
+    )
+    intervention_consent_policy: InterventionConsentPolicy = field(
+        default_factory=InterventionConsentPolicy
+    )
+    intervention_action_consent_gate: InterventionActionConsentGate = field(
+        default_factory=InterventionActionConsentGate
     )
 
     @classmethod
@@ -109,6 +119,23 @@ def build_graph(
             "visited": ["intervention_policy"],
         }
 
+    def intervention_consent(state: AgentState) -> dict[str, object]:
+        consent, directive, audit = (
+            dependencies.intervention_consent_policy.transition(
+                state.get("intervention_consent_state"),
+                proposal=state.get("intervention_proposal"),
+                transcript=state["transcript"],
+                care=state["care_loop_state"],
+                directive=state["agent_directive"],
+            )
+        )
+        return {
+            "intervention_consent_state": consent,
+            "intervention_consent_audit": audit,
+            "agent_directive": directive,
+            "visited": ["intervention_consent"],
+        }
+
     async def context_fetch(state: AgentState) -> dict[str, object]:
         context = await dependencies.agent_provider.load_context(
             state["transcript"],
@@ -170,6 +197,9 @@ def build_graph(
         context["intervention_proposal"] = (
             proposal.model_dump(mode="json") if proposal is not None else None
         )
+        context["intervention_consent"] = state[
+            "intervention_consent_state"
+        ].model_dump(mode="json")
         return {
             "agent_directive": directive,
             "agent_trace": trace,
@@ -269,6 +299,23 @@ def build_graph(
             "visited": ["capability_gate"],
         }
 
+    def intervention_action_consent_gate(
+        state: AgentState,
+    ) -> dict[str, object]:
+        response, consent, audit = (
+            dependencies.intervention_action_consent_gate.apply(
+                state["response"],
+                state["intervention_consent_state"],
+                current_turn=state["care_loop_state"].turn_count,
+            )
+        )
+        return {
+            "response": response,
+            "intervention_consent_state": consent,
+            "intervention_action_consent_audit": audit,
+            "visited": ["intervention_action_consent_gate"],
+        }
+
     def evidence_response_gate(state: AgentState) -> dict[str, object]:
         response, audit = dependencies.evidence_orchestrator.authorize_response(
             state["response"],
@@ -308,6 +355,7 @@ def build_graph(
     builder.add_node("intent_policy", intent_policy)
     builder.add_node("care_loop", care_loop)
     builder.add_node("intervention_policy", intervention_policy)
+    builder.add_node("intervention_consent", intervention_consent)
     builder.add_node("context_fetch", context_fetch)
     builder.add_node("evidence_prepare", evidence_prepare)
     builder.add_node("decision_gate", decision_gate)
@@ -317,6 +365,10 @@ def build_graph(
     builder.add_node("output_guard", output_guard)
     builder.add_node("evidence_response_gate", evidence_response_gate)
     builder.add_node("capability_gate", capability_gate)
+    builder.add_node(
+        "intervention_action_consent_gate",
+        intervention_action_consent_gate,
+    )
     builder.add_node("avatar_policy", avatar_policy)
     builder.add_node("publish_response", publish_response)
     builder.add_node("propose_memory", propose_memory)
@@ -326,7 +378,8 @@ def build_graph(
     builder.add_edge("final_risk", "intent_policy")
     builder.add_edge("intent_policy", "care_loop")
     builder.add_edge("care_loop", "intervention_policy")
-    builder.add_conditional_edges("intervention_policy", route_after_intent)
+    builder.add_edge("intervention_policy", "intervention_consent")
+    builder.add_conditional_edges("intervention_consent", route_after_intent)
     builder.add_edge("context_fetch", "evidence_prepare")
     builder.add_edge("evidence_prepare", "decision_gate")
     builder.add_conditional_edges("decision_gate", route_after_decision)
@@ -335,7 +388,8 @@ def build_graph(
     builder.add_edge("crisis_policy", "output_guard")
     builder.add_edge("output_guard", "evidence_response_gate")
     builder.add_edge("evidence_response_gate", "capability_gate")
-    builder.add_edge("capability_gate", "avatar_policy")
+    builder.add_edge("capability_gate", "intervention_action_consent_gate")
+    builder.add_edge("intervention_action_consent_gate", "avatar_policy")
     builder.add_edge("avatar_policy", "publish_response")
     builder.add_edge("publish_response", "propose_memory")
     builder.add_edge("propose_memory", END)

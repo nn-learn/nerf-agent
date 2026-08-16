@@ -5,6 +5,11 @@ from app.agent.actions import CapabilityProposalAudit
 from app.agent.avatar import AvatarResponsePlan
 from app.agent.care import CareLoopState, CareLoopTrace
 from app.agent.evidence import EvidenceContextAudit, EvidenceResponseAudit
+from app.agent.intervention_consent import (
+    InterventionActionConsentAudit,
+    InterventionConsentAudit,
+    InterventionConsentState,
+)
 from app.agent.interventions import (
     InterventionPolicyAudit,
     InterventionProposal,
@@ -34,6 +39,9 @@ class AgentState(TypedDict, total=False):
     intervention_state: InterventionRuntimeState
     intervention_proposal: InterventionProposal | None
     intervention_policy_audit: InterventionPolicyAudit
+    intervention_consent_state: InterventionConsentState
+    intervention_consent_audit: InterventionConsentAudit
+    intervention_action_consent_audit: InterventionActionConsentAudit
     long_term_memory: list[dict[str, object]]
     context: dict[str, object]
     candidate_response: AgentResponse

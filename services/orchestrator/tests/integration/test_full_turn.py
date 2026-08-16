@@ -93,9 +93,11 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "agent.decision.completed",
         "care.loop.transitioned",
         "intervention.policy.completed",
+        "intervention.consent.transitioned",
         "evidence.context.completed",
         "evidence.response.completed",
         "capability.policy.completed",
+        "intervention.consent.action_checked",
         "retrieval.completed",
         "avatar.plan.ready",
         "assistant.response.ready",
@@ -125,9 +127,11 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "agent.decision.completed",
         "care.loop.transitioned",
         "intervention.policy.completed",
+        "intervention.consent.transitioned",
         "evidence.context.completed",
         "evidence.response.completed",
         "capability.policy.completed",
+        "intervention.consent.action_checked",
         "avatar.plan.ready",
     }
     policy_payloads = json.dumps(

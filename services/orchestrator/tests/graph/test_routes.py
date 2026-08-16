@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from app.agent.intervention_consent import InterventionConsentStatus
 from app.graph.build import GraphDependencies, build_graph
 from app.providers.protocols import AgentPlan
 from app.safety.models import AgentResponse, RiskAssessment, RiskLevel
@@ -113,6 +114,31 @@ class HallucinatingCitationProvider(RecordingAgentProvider):
         return AgentPlan(response=response, provider_metrics={"provider": "test"})
 
 
+class BreathingActionProvider(RecordingAgentProvider):
+    async def plan_reply(
+        self,
+        transcript: str,
+        risk: RiskAssessment,
+        context: dict[str, object],
+        *,
+        turn_id: str,
+        cancel_token: str,
+    ) -> AgentPlan:
+        _ = transcript, context
+        self.reply_call = (turn_id, cancel_token, risk.level)
+        response = agent_response(risk.level, support_mode="exercise").model_copy(
+            update={
+                "action_proposals": [
+                    {
+                        "tool": "start_breathing_exercise",
+                        "arguments": {},
+                    }
+                ]
+            }
+        )
+        return AgentPlan(response=response, provider_metrics={"provider": "test"})
+
+
 @pytest.mark.asyncio
 async def test_green_turn_fetches_context_before_reply() -> None:
     """Catches normal turns that bypass governed context or cancellation metadata."""
@@ -142,6 +168,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "intent_policy",
         "care_loop",
         "intervention_policy",
+        "intervention_consent",
         "context_fetch",
         "evidence_prepare",
         "decision_gate",
@@ -149,6 +176,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "output_guard",
         "evidence_response_gate",
         "capability_gate",
+        "intervention_action_consent_gate",
         "avatar_policy",
         "publish_response",
         "propose_memory",
@@ -261,6 +289,52 @@ async def test_graph_replaces_hallucinated_citation_before_publish() -> None:
     assert result["evidence_response_audit"].reason_codes == [
         "UNKNOWN_REVIEWED_CITATION"
     ]
+
+
+@pytest.mark.asyncio
+async def test_graph_requires_second_turn_consent_before_breathing_action() -> None:
+    graph = build_graph(
+        GraphDependencies(
+            agent_provider=BreathingActionProvider(),
+            output_guard=GraphDependencies.for_mock().output_guard,
+        )
+    )
+
+    first = await graph.ainvoke(
+        {
+            "transcript": "请带我做呼吸练习",
+            "visual_summary": "",
+            "turn_id": "turn_1",
+            "cancel_token": "ct_1",
+            "visited": [],
+        }
+    )
+    assert first["intervention_consent_state"].status is (
+        InterventionConsentStatus.OFFERED
+    )
+    assert first["response"].action_proposals == []
+
+    second = await graph.ainvoke(
+        {
+            "transcript": "可以，开始吧",
+            "visual_summary": "",
+            "turn_id": "turn_2",
+            "cancel_token": "ct_2",
+            "care_loop_state": first["care_loop_state"],
+            "intervention_state": first["intervention_state"],
+            "intervention_consent_state": first[
+                "intervention_consent_state"
+            ],
+            "visited": [],
+        }
+    )
+    assert second["intervention_consent_state"].status is (
+        InterventionConsentStatus.ACTIVE
+    )
+    assert second["response"].action_proposals[0]["status"] == "APPROVED"
+    assert second["response"].action_proposals[0]["consent_scope"] == (
+        "EXACT_PENDING_INTERVENTION"
+    )
 
 
 @pytest.mark.asyncio

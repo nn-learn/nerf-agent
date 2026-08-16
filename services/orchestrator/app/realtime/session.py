@@ -13,6 +13,10 @@ from pydantic import BaseModel, Field
 
 from app.agent.avatar import AvatarResponsePlan
 from app.agent.care import CareLoopState
+from app.agent.intervention_consent import (
+    InterventionConsentPolicy,
+    InterventionConsentState,
+)
 from app.agent.interventions import InterventionRuntimeState
 from app.events.consent import ConsentKind, ConsentService
 from app.events.store import EventStore
@@ -175,6 +179,9 @@ class SessionRuntime:
     intervention_state: InterventionRuntimeState = field(
         default_factory=InterventionRuntimeState
     )
+    intervention_consent_state: InterventionConsentState = field(
+        default_factory=InterventionConsentState
+    )
 
 
 class SessionManager:
@@ -199,11 +206,13 @@ class SessionManager:
         self._audio = audio_bridge or MockAudioBridge()
         self._provider_mode = provider_mode
         self._coordinator = coordinator or TurnCoordinator()
+        self._intervention_consent = InterventionConsentPolicy()
         self._graph = build_graph(
             GraphDependencies(
                 agent_provider=agent_provider or MockAgentProvider(),
                 output_guard=GraphDependencies.for_mock().output_guard,
                 memory_context_loader=memory_context_loader,
+                intervention_consent_policy=self._intervention_consent,
             )
         )
         self._sessions: dict[str, SessionRuntime] = {}
@@ -469,6 +478,9 @@ class SessionManager:
                 "intervention_state": runtime.intervention_state.model_copy(
                     deep=True
                 ),
+                "intervention_consent_state": (
+                    runtime.intervention_consent_state.model_copy(deep=True)
+                ),
                 "visited": [],
             }
         )
@@ -480,11 +492,16 @@ class SessionManager:
             InterventionRuntimeState,
             graph_result["intervention_state"],
         )
+        intervention_consent_state = cast(
+            InterventionConsentState,
+            graph_result["intervention_consent_state"],
+        )
         if not await self._commit_policy_state_current(
             runtime,
             active,
             care_loop_state,
             intervention_state,
+            intervention_consent_state,
         ):
             return self._interrupted_result(active, risk=risk, response=response)
         raw_metrics = graph_result.get("provider_metrics", {})
@@ -524,6 +541,10 @@ class SessionManager:
                 graph_result.get("intervention_policy_audit"),
             ),
             (
+                "intervention.consent.transitioned",
+                graph_result.get("intervention_consent_audit"),
+            ),
+            (
                 "evidence.context.completed",
                 graph_result.get("evidence_context_audit"),
             ),
@@ -534,6 +555,10 @@ class SessionManager:
             (
                 "capability.policy.completed",
                 graph_result.get("capability_audit"),
+            ),
+            (
+                "intervention.consent.action_checked",
+                graph_result.get("intervention_action_consent_audit"),
             ),
         ):
             payload = (
@@ -769,6 +794,22 @@ class SessionManager:
             runtime.active_turn = None
             interrupted_turn = active.handle
             cancelled_token = result.cancelled_token
+            consent_state, consent_audit = (
+                self._intervention_consent.cancel_for_interrupt(
+                    runtime.intervention_consent_state,
+                    reason=reason,
+                )
+            )
+            runtime.intervention_consent_state = consent_state
+            if consent_audit is not None:
+                await self.store.append_payload(
+                    session_id=session_id,
+                    turn_id=active.handle.turn_id,
+                    trace_id=active.trace_id,
+                    cancel_token=active.handle.cancel_token,
+                    event_type="intervention.consent.interrupted",
+                    payload=consent_audit.model_dump(mode="json"),
+                )
             await self.store.append_payload(
                 session_id=session_id,
                 turn_id=active.handle.turn_id,
@@ -798,6 +839,7 @@ class SessionManager:
             runtime.descriptor.status = SessionStatus.ENDED
             runtime.care_loop_state = CareLoopState()
             runtime.intervention_state = InterventionRuntimeState()
+            runtime.intervention_consent_state = InterventionConsentState()
             await self.store.append_payload(
                 session_id=session_id,
                 event_type="session.ended",
@@ -876,6 +918,7 @@ class SessionManager:
         active: ActiveTurn,
         care_loop_state: CareLoopState,
         intervention_state: InterventionRuntimeState,
+        intervention_consent_state: InterventionConsentState,
     ) -> bool:
         async with runtime.event_lock:
             if runtime.active_turn is not active:
@@ -887,6 +930,9 @@ class SessionManager:
                 return False
             runtime.care_loop_state = care_loop_state.model_copy(deep=True)
             runtime.intervention_state = intervention_state.model_copy(deep=True)
+            runtime.intervention_consent_state = (
+                intervention_consent_state.model_copy(deep=True)
+            )
             return True
 
     async def _observe_current(

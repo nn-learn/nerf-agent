@@ -211,7 +211,7 @@ class InterventionPolicy:
                 capability=definition.capability,
                 requires_explicit_consent=definition.requires_explicit_consent,
                 evidence_requirement=definition.evidence_requirement,
-                expires_after_turn=care.turn_count,
+                expires_after_turn=care.turn_count + 2,
             )
             return updated, proposal, self._audit(
                 updated,

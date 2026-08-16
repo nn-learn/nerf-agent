@@ -30,7 +30,6 @@ final_risk -> intent_policy -> care_loop
 
 ## 后续阶段
 
-- V4.2：提议、明确接受、进行、完成、拒绝、停止和打断的同意状态机；
 - V4.3：仅依赖用户主动反馈的效果信号，以及无原始心理内容的纵向漂移监测；
 - V4.4：多轮情景评测、隐私泄漏门、危机覆盖门和 fail-closed 发布报告。
 
@@ -39,6 +38,12 @@ final_risk -> intent_policy -> care_loop
 V4.1 新增 host-owned `InterventionCatalog`。目录当前包含反映式倾听、节律呼吸、经审核心理教育、人工接管和会话总结。每个定义都固定声明适用阶段、目标类别、风险等级、是否要求用户确认目标、是否要求显式同意、证据要求、能力映射、冷却轮数和会话提议上限。
 
 `InterventionPolicy` 每轮最多选择一个候选，并只把候选放入模型上下文；它不会执行能力，也不会把练习自动标记为用户已接受。危机轮次完全交给确定性 crisis path。会话级账本只记录每类提议次数和最后提议轮次，因而能阻止连续重复劝说，同时不保存用户心理内容。`intervention.policy.completed` 事件仅发布阶段、风险、目标类别、候选和 reason code。
+
+## V4.2：显式、限域且可撤销的干预同意
+
+需要同意的干预采用 `OFFERED -> ACCEPTED -> ACTIVE -> COMPLETED` 两阶段授权。初次提出“带我呼吸”只形成待确认 offer；下一轮只有在该 offer 尚未过期时，明确的接受表达才会把精确 capability 临时加入控制面 allowlist。模型不能用首轮 action proposal 绕过同意门。
+
+`DECLINED`、`CANCELLED` 和 `EXPIRED` 都是 fail-closed 终态。用户说“停止”、危机覆盖或实时 barge-in 会撤销待确认或进行中的 scope。短词“好”只在已有待确认 offer 时解析为接受，在空闲状态下没有授权含义。动作发布前的独立 consent gate 还会再次核对 capability 与 scope；通过后只标为 `APPROVED`，实际执行仍由工具层负责。
 
 ## 设计依据
 
