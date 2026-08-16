@@ -10,6 +10,7 @@ from app.agent.avatar import AvatarPolicy
 from app.agent.care import CareLoopPolicy
 from app.agent.control import AgentControlPlane
 from app.agent.evidence import EvidenceOrchestrator
+from app.agent.interventions import InterventionPolicy
 from app.agent.models import EvidenceRequirement, MemoryAccessMode, ResponseStrategy
 from app.graph.state import AgentState
 from app.providers.mock import MockAgentProvider
@@ -37,6 +38,9 @@ class GraphDependencies:
     )
     avatar_policy: AvatarPolicy = field(default_factory=AvatarPolicy)
     care_loop_policy: CareLoopPolicy = field(default_factory=CareLoopPolicy)
+    intervention_policy: InterventionPolicy = field(
+        default_factory=InterventionPolicy
+    )
 
     @classmethod
     def for_mock(cls) -> "GraphDependencies":
@@ -90,6 +94,19 @@ def build_graph(
             "care_loop_state": care_state,
             "care_loop_trace": trace,
             "visited": ["care_loop"],
+        }
+
+    def intervention_policy(state: AgentState) -> dict[str, object]:
+        runtime, proposal, audit = dependencies.intervention_policy.select(
+            state.get("intervention_state"),
+            care=state["care_loop_state"],
+            directive=state["agent_directive"],
+        )
+        return {
+            "intervention_state": runtime,
+            "intervention_proposal": proposal,
+            "intervention_policy_audit": audit,
+            "visited": ["intervention_policy"],
         }
 
     async def context_fetch(state: AgentState) -> dict[str, object]:
@@ -149,6 +166,10 @@ def build_graph(
         context = dict(state["context"])
         context["agent_control"] = directive.model_dump(mode="json")
         context["care_loop"] = state["care_loop_state"].model_dump(mode="json")
+        proposal = state.get("intervention_proposal")
+        context["intervention_proposal"] = (
+            proposal.model_dump(mode="json") if proposal is not None else None
+        )
         return {
             "agent_directive": directive,
             "agent_trace": trace,
@@ -286,6 +307,7 @@ def build_graph(
     builder.add_node("final_risk", final_risk)
     builder.add_node("intent_policy", intent_policy)
     builder.add_node("care_loop", care_loop)
+    builder.add_node("intervention_policy", intervention_policy)
     builder.add_node("context_fetch", context_fetch)
     builder.add_node("evidence_prepare", evidence_prepare)
     builder.add_node("decision_gate", decision_gate)
@@ -303,7 +325,8 @@ def build_graph(
     builder.add_edge("partial_risk", "final_risk")
     builder.add_edge("final_risk", "intent_policy")
     builder.add_edge("intent_policy", "care_loop")
-    builder.add_conditional_edges("care_loop", route_after_intent)
+    builder.add_edge("care_loop", "intervention_policy")
+    builder.add_conditional_edges("intervention_policy", route_after_intent)
     builder.add_edge("context_fetch", "evidence_prepare")
     builder.add_edge("evidence_prepare", "decision_gate")
     builder.add_conditional_edges("decision_gate", route_after_decision)

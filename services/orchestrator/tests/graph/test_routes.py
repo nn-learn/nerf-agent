@@ -141,6 +141,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
         "final_risk",
         "intent_policy",
         "care_loop",
+        "intervention_policy",
         "context_fetch",
         "evidence_prepare",
         "decision_gate",
@@ -157,6 +158,7 @@ async def test_green_turn_fetches_context_before_reply() -> None:
     assert result["response"].support_mode == "listen"
     assert result["provider_metrics"] == {"provider": "recording_normal"}
     assert result["care_loop_state"].turn_count == 1
+    assert result["intervention_proposal"].kind == "REFLECTIVE_LISTENING"
 
 
 @pytest.mark.asyncio

@@ -92,6 +92,7 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
         "risk.updated",
         "agent.decision.completed",
         "care.loop.transitioned",
+        "intervention.policy.completed",
         "evidence.context.completed",
         "evidence.response.completed",
         "capability.policy.completed",
@@ -123,6 +124,7 @@ async def test_visual_voice_turn_uses_one_trace_and_ordered_events(tmp_path) -> 
     policy_event_types = {
         "agent.decision.completed",
         "care.loop.transitioned",
+        "intervention.policy.completed",
         "evidence.context.completed",
         "evidence.response.completed",
         "capability.policy.completed",
