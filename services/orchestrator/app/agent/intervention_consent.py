@@ -3,7 +3,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from app.agent.care import CareLoopState, CarePhase
+from app.agent.care import CareLoopState, CarePhase, GoalOwnership
 from app.agent.interventions import InterventionKind, InterventionProposal
 from app.agent.models import AgentDirective
 from app.safety.models import AgentResponse, RiskLevel
@@ -87,6 +87,8 @@ class InterventionConsentPolicy:
         "停一下",
         "先停",
         "别继续",
+        "今天就到这",
+        "结束聊天",
         "stop",
         "pause it",
     )
@@ -217,9 +219,17 @@ class InterventionConsentPolicy:
         *,
         previous_status: InterventionConsentStatus,
     ) -> CareLoopState:
+        if care.goal_ownership is GoalOwnership.SAFETY_OVERRIDE:
+            return care.model_copy(deep=True)
+        if care.phase is CarePhase.CLOSE:
+            return care.model_copy(deep=True)
         next_phase = care.phase
         if consent.status is InterventionConsentStatus.ACTIVE:
-            next_phase = CarePhase.PRACTICE
+            next_phase = (
+                CarePhase.HANDOFF
+                if consent.intervention is InterventionKind.HUMAN_HANDOFF
+                else CarePhase.PRACTICE
+            )
         elif consent.status is InterventionConsentStatus.COMPLETED:
             next_phase = CarePhase.REFLECT
         elif consent.status in {

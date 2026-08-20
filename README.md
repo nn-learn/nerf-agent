@@ -121,6 +121,12 @@ Agent V3.0–V3.4 已完成工程闭环：确定性风险覆盖意图，意图�
 
 当前 31 个跨层工程场景全部通过，发布门返回 `ENGINEERING_DEMO_COMPLETE` 和 `demo_ready=true`，同时因独立标注、临床/隐私签署、红队、可访问性与危机演练尚未完成而保持 `production_ready=false`。架构与边界见 [`docs/AGENT_V3.md`](docs/AGENT_V3.md)，指标与复现命令见 [`docs/AGENT_V3_EVALUATION.md`](docs/AGENT_V3_EVALUATION.md)。
 
+## Agent V4 用户自治支持闭环
+
+Agent V4.0–V4.4 已在 V3 控制面之上增加会话级 Care Loop：只有用户当前明确表达才能确认支持目标，Memory/RAG 不能代替用户设定目标；host-owned 干预目录约束适用阶段、风险、证据、冷却和次数；呼吸与人工接管等动作使用 `OFFERED -> ACCEPTED -> ACTIVE` 两轮、限域且可撤销的同意。危机覆盖、拒绝、停止、过期和 barge-in 均会 fail-closed。
+
+纵向观测只统计固定枚举、计数、比率和用户明确自报的“有帮助/没帮助/跳过”，不从表情、声音或摄像头推断疗效。当前 30 条、78 turn 多轮工程轨迹全部通过，目标越权推断、遥测内容泄漏和媒体结果推断率均为 `0.000`；发布门仍为 `production_ready=false`。设计见 [`docs/AGENT_V4.md`](docs/AGENT_V4.md)，评测见 [`docs/AGENT_V4_EVALUATION.md`](docs/AGENT_V4_EVALUATION.md)。
+
 ## 最快 mock 演示（无 GPU）
 
 首次准备：
@@ -197,6 +203,7 @@ Set-Location services\avatar_radnerf
 - Web 单元测试和生产构建
 - 固定风险与视觉安全报告
 - Agent V3 跨层场景、隐私 trace 与 fail-closed 发布门
+- Agent V4 多轮目标、干预同意、漂移遥测与 fail-closed 发布门
 
 当前固定集要求：
 
