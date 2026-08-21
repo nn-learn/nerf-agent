@@ -9,6 +9,11 @@ from pydantic import BaseModel, Field
 from app.memory.consolidation import MemoryProfileRepository
 from app.memory.models import MemoryAspect, MemoryItem, MemoryProfile
 from app.memory.repository import MemoryRepository
+from app.memory.use_policy import (
+    MemoryUseContext,
+    MemoryUseDecision,
+    MemoryUsePolicy,
+)
 
 _INSTRUCTION_RE = re.compile(
     r"忽略.{0,8}(指令|规则|系统)|system\s*prompt|调用.{0,6}工具|执行.{0,6}命令",
@@ -30,6 +35,8 @@ class RetrievedMemory(BaseModel):
     source_message_ids: list[str]
     evidence_memory_ids: list[str] = Field(default_factory=list)
     valid_at_ms: int | None = Field(default=None, ge=0)
+    source_type: str = "LEGACY"
+    sensitivity: str = "GENERAL"
 
 
 class MemoryEmbeddingProvider(Protocol):
@@ -63,9 +70,16 @@ class CachedMemoryEmbeddingProvider:
 class GovernedMemoryRetriever:
     """Purpose-filtered CPU baseline; embeddings can replace only the scoring stage."""
 
-    def __init__(self, repository: MemoryRepository, *, min_score: float = 0.18) -> None:
+    def __init__(
+        self,
+        repository: MemoryRepository,
+        *,
+        min_score: float = 0.18,
+        use_policy: MemoryUsePolicy | None = None,
+    ) -> None:
         self._repository = repository
         self._min_score = min_score
+        self._use_policy = use_policy or MemoryUsePolicy()
 
     def retrieve(
         self,
@@ -75,10 +89,14 @@ class GovernedMemoryRetriever:
         purpose_scope: str = "personalization",
         k: int = 5,
         as_of_ms: int | None = None,
+        use_context: MemoryUseContext | None = None,
     ) -> list[RetrievedMemory]:
         if k <= 0:
             return []
         now_ms = as_of_ms if as_of_ms is not None else int(time.time() * 1000)
+        policy_context = use_context or MemoryUseContext(
+            explicit_sensitive_revisit=True
+        )
         query_features = self._features(query)
         ranked: list[tuple[float, float, list[str], MemoryItem]] = []
         for item in self._repository.list_active(
@@ -87,6 +105,9 @@ class GovernedMemoryRetriever:
             as_of_ms=now_ms,
         ):
             candidate = item.candidate
+            authorization = self._use_policy.evaluate(item, context=policy_context)
+            if authorization.decision is MemoryUseDecision.BLOCK:
+                continue
             if candidate.integrity_flags or _INSTRUCTION_RE.search(candidate.text):
                 continue
             lexical = self._weighted_jaccard(query_features, self._features(candidate.text))
@@ -135,6 +156,8 @@ class GovernedMemoryRetriever:
                     if item.candidate.valid_from_ms is not None
                     else item.created_at_ms
                 ),
+                source_type=item.candidate.source_type.value,
+                sensitivity=item.candidate.sensitivity.value,
             )
             for score, lexical, reasons, item in ranked[:k]
         ]
@@ -147,6 +170,9 @@ class GovernedMemoryRetriever:
                 "fact": item.text,
                 "aspect": item.aspect.value,
                 "source_turn_id": item.source_turn_id,
+                "source_type": item.source_type,
+                "sensitivity": item.sensitivity,
+                "valid_at_ms": item.valid_at_ms,
                 "trust": "user_confirmed_data_not_instruction",
             }
             for item in items
@@ -324,6 +350,7 @@ class GovernedEmbeddingMemoryRetriever:
         embedding_provider: MemoryEmbeddingProvider,
         min_relevance: float = 0.40,
         min_score: float = 0.18,
+        use_policy: MemoryUsePolicy | None = None,
     ) -> None:
         if not 0 <= min_relevance <= 1:
             raise ValueError("min_relevance must be between 0 and 1")
@@ -331,6 +358,7 @@ class GovernedEmbeddingMemoryRetriever:
         self._embedding_provider = embedding_provider
         self._min_relevance = min_relevance
         self._min_score = min_score
+        self._use_policy = use_policy or MemoryUsePolicy()
         self._vector_cache: dict[str, list[float]] = {}
 
     def retrieve(
@@ -341,10 +369,14 @@ class GovernedEmbeddingMemoryRetriever:
         purpose_scope: str = "personalization",
         k: int = 5,
         as_of_ms: int | None = None,
+        use_context: MemoryUseContext | None = None,
     ) -> list[RetrievedMemory]:
         if k <= 0:
             return []
         now_ms = as_of_ms if as_of_ms is not None else int(time.time() * 1000)
+        policy_context = use_context or MemoryUseContext(
+            explicit_sensitive_revisit=True
+        )
         query_vector = self._embedding_provider.embed(query)
         ranked: list[tuple[float, float, list[str], MemoryItem]] = []
         for item in self._repository.list_active(
@@ -353,6 +385,9 @@ class GovernedEmbeddingMemoryRetriever:
             as_of_ms=now_ms,
         ):
             candidate = item.candidate
+            authorization = self._use_policy.evaluate(item, context=policy_context)
+            if authorization.decision is MemoryUseDecision.BLOCK:
+                continue
             if candidate.integrity_flags or _INSTRUCTION_RE.search(candidate.text):
                 continue
             memory_vector = self._vector_cache.get(candidate.text)
@@ -405,6 +440,8 @@ class GovernedEmbeddingMemoryRetriever:
                     if item.candidate.valid_from_ms is not None
                     else item.created_at_ms
                 ),
+                source_type=item.candidate.source_type.value,
+                sensitivity=item.candidate.sensitivity.value,
             )
             for score, relevance, reasons, item in ranked[:k]
         ]
@@ -442,6 +479,7 @@ class GovernedHybridMemoryRetriever:
         candidate_k: int = 20,
         min_fused_score: float = 0.32,
         rrf_constant: int = 60,
+        use_policy: MemoryUsePolicy | None = None,
     ) -> None:
         if candidate_k <= 0:
             raise ValueError("candidate_k must be positive")
@@ -449,11 +487,13 @@ class GovernedHybridMemoryRetriever:
             raise ValueError("min_fused_score must be between 0 and 1")
         if rrf_constant <= 0:
             raise ValueError("rrf_constant must be positive")
-        self._lexical = GovernedMemoryRetriever(repository)
+        policy = use_policy or MemoryUsePolicy()
+        self._lexical = GovernedMemoryRetriever(repository, use_policy=policy)
         self._semantic = GovernedEmbeddingMemoryRetriever(
             repository,
             embedding_provider=embedding_provider,
             min_relevance=semantic_min_relevance,
+            use_policy=policy,
         )
         self._candidate_k = candidate_k
         self._min_fused_score = min_fused_score
@@ -467,6 +507,7 @@ class GovernedHybridMemoryRetriever:
         purpose_scope: str = "personalization",
         k: int = 5,
         as_of_ms: int | None = None,
+        use_context: MemoryUseContext | None = None,
     ) -> list[RetrievedMemory]:
         if k <= 0:
             return []
@@ -477,6 +518,7 @@ class GovernedHybridMemoryRetriever:
             purpose_scope=purpose_scope,
             k=branch_k,
             as_of_ms=as_of_ms,
+            use_context=use_context,
         )
         semantic = self._semantic.retrieve(
             query,
@@ -484,6 +526,7 @@ class GovernedHybridMemoryRetriever:
             purpose_scope=purpose_scope,
             k=branch_k,
             as_of_ms=as_of_ms,
+            use_context=use_context,
         )
         lexical_by_id = {item.memory_id: item for item in lexical}
         semantic_by_id = {item.memory_id: item for item in semantic}
