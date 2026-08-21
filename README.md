@@ -129,7 +129,7 @@ Agent V4.0–V4.4 已在 V3 控制面之上增加会话级 Care Loop：只有用
 
 ## Agent V5 可信记忆治理
 
-V5.0 已将原子记忆升级为可审计 Memory Ledger：持久化来源类型、敏感等级、允许用途、观测时间、现实有效区间和派生 lineage。旧库可在线迁移；跨用户或悬空 lineage 会 fail-closed；现实有效期结束只停止当前召回，不会混同于数据保留到期；用户编辑拥有独立 provenance。路线与边界见 [`docs/AGENT_V5.md`](docs/AGENT_V5.md)。
+V5.0–V5.1 已将原子记忆升级为可审计 Memory Ledger：持久化来源类型、敏感等级、允许用途、观测时间、现实有效区间和派生 lineage。旧库可在线迁移；跨用户或悬空 lineage 会 fail-closed；现实有效期结束只停止当前召回，不会混同于数据保留到期；撤回和物理删除会沿派生链传播，并生成不含原文的删除验证凭证。路线与边界见 [`docs/AGENT_V5.md`](docs/AGENT_V5.md)。
 
 ## 最快 mock 演示（无 GPU）
 

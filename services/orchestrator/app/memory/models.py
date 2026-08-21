@@ -156,9 +156,7 @@ class MemoryCandidate(BaseModel):
             raise ValueError("memory must allow at least one governed use")
         if any(not memory_id.strip() for memory_id in self.derived_from_memory_ids):
             raise ValueError("derived memory ids must not be blank")
-        if len(set(self.derived_from_memory_ids)) != len(
-            self.derived_from_memory_ids
-        ):
+        if len(set(self.derived_from_memory_ids)) != len(self.derived_from_memory_ids):
             raise ValueError("derived memory ids must be unique")
         return self
 
@@ -274,3 +272,15 @@ class MemoryRecall(BaseModel):
     relevance_score: float = Field(ge=0, le=1)
     reason_codes: list[str]
     used_at_ms: int = Field(ge=0)
+
+
+class MemoryDeletionReceipt(BaseModel):
+    """Content-free proof that a root memory and its derivatives were purged."""
+
+    deletion_id: str
+    user_id: str
+    root_memory_id_digest: str
+    deleted_memory_count: int = Field(ge=1)
+    deleted_derived_count: int = Field(ge=0)
+    completed_at_ms: int = Field(ge=0)
+    verification_digest: str

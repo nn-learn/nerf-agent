@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import time
@@ -10,6 +11,7 @@ from app.memory.models import (
     MemoryAllowedUse,
     MemoryAspect,
     MemoryCandidate,
+    MemoryDeletionReceipt,
     MemoryItem,
     MemoryKind,
     MemoryRecall,
@@ -45,9 +47,7 @@ _MIGRATION_COLUMNS = {
     "supersedes_memory_id": "TEXT",
     "source_type": "TEXT NOT NULL DEFAULT 'LEGACY'",
     "sensitivity": "TEXT NOT NULL DEFAULT 'GENERAL'",
-    "allowed_uses_json": (
-        "TEXT NOT NULL DEFAULT '[\"PERSONALIZATION\",\"RESPONSE_CONTEXT\"]'"
-    ),
+    "allowed_uses_json": ('TEXT NOT NULL DEFAULT \'["PERSONALIZATION","RESPONSE_CONTEXT"]\''),
     "observed_at_ms": "INTEGER",
     "valid_to_ms": "INTEGER",
     "derived_from_memory_ids_json": "TEXT NOT NULL DEFAULT '[]'",
@@ -74,43 +74,30 @@ class MemoryRepository:
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        schema = (
-            Path(__file__).parents[1] / "events" / "schema.sql"
-        ).read_text(encoding="utf-8")
+        schema = (Path(__file__).parents[1] / "events" / "schema.sql").read_text(encoding="utf-8")
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.executescript(schema)
             existing = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(memory_items)")
+                str(row[1]) for row in connection.execute("PRAGMA table_info(memory_items)")
             }
             for name, definition in _MIGRATION_COLUMNS.items():
                 if name not in existing:
-                    connection.execute(
-                        f"ALTER TABLE memory_items ADD COLUMN {name} {definition}"
-                    )
+                    connection.execute(f"ALTER TABLE memory_items ADD COLUMN {name} {definition}")
             shadow_columns = {
-                str(row[1])
-                for row in connection.execute(
-                    "PRAGMA table_info(memory_shadow_runs)"
-                )
+                str(row[1]) for row in connection.execute("PRAGMA table_info(memory_shadow_runs)")
             }
             for name, definition in _SHADOW_MIGRATION_COLUMNS.items():
                 if name not in shadow_columns:
                     connection.execute(
-                        "ALTER TABLE memory_shadow_runs "
-                        f"ADD COLUMN {name} {definition}"
+                        f"ALTER TABLE memory_shadow_runs ADD COLUMN {name} {definition}"
                     )
             observation_columns = {
-                str(row[1])
-                for row in connection.execute(
-                    "PRAGMA table_info(memory_observations)"
-                )
+                str(row[1]) for row in connection.execute("PRAGMA table_info(memory_observations)")
             }
             for name, definition in _OBSERVATION_MIGRATION_COLUMNS.items():
                 if name not in observation_columns:
                     connection.execute(
-                        "ALTER TABLE memory_observations "
-                        f"ADD COLUMN {name} {definition}"
+                        f"ALTER TABLE memory_observations ADD COLUMN {name} {definition}"
                     )
             connection.execute(
                 """
@@ -119,14 +106,12 @@ class MemoryRepository:
                 """
             )
             profile_columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(memory_profiles)")
+                str(row[1]) for row in connection.execute("PRAGMA table_info(memory_profiles)")
             }
             for name, definition in _PROFILE_MIGRATION_COLUMNS.items():
                 if name not in profile_columns:
                     connection.execute(
-                        "ALTER TABLE memory_profiles "
-                        f"ADD COLUMN {name} {definition}"
+                        f"ALTER TABLE memory_profiles ADD COLUMN {name} {definition}"
                     )
             connection.execute(
                 """
@@ -337,116 +322,235 @@ class MemoryRepository:
     ) -> None:
         timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
-            query = """
-                UPDATE memory_items SET state = ?, updated_at_ms = ?
-                WHERE memory_id = ?
-            """
-            values: tuple[object, ...] = (
-                MemoryState.REVOKED.value,
-                timestamp,
-                memory_id,
-            )
-            if user_id is not None:
-                query += " AND user_id = ?"
-                values += (user_id,)
-            cursor = connection.execute(query, values)
-            if user_id is not None and cursor.rowcount == 0:
+            connection.execute("BEGIN IMMEDIATE")
+            if user_id is None:
+                root = connection.execute(
+                    "SELECT user_id FROM memory_items WHERE memory_id = ?",
+                    (memory_id,),
+                ).fetchone()
+            else:
+                root = connection.execute(
+                    """
+                    SELECT user_id FROM memory_items
+                    WHERE memory_id = ? AND user_id = ?
+                    """,
+                    (memory_id, user_id),
+                ).fetchone()
+            if root is None and user_id is not None:
                 raise KeyError(memory_id)
-            if cursor.rowcount > 0:
+            if root is None:
+                return
+            owner = str(root[0])
+            target_ids = self._lineage_descendants(
+                connection,
+                user_id=owner,
+                root_memory_id=memory_id,
+            )
+            placeholders = ",".join("?" for _ in target_ids)
+            connection.execute(
+                f"""
+                UPDATE memory_items SET state = ?, updated_at_ms = ?
+                WHERE user_id = ? AND memory_id IN ({placeholders})
+                """,
+                (MemoryState.REVOKED.value, timestamp, owner, *target_ids),
+            )
+            for target_id in target_ids:
                 self._invalidate_derived_profiles(
                     connection,
-                    memory_id=memory_id,
+                    memory_id=target_id,
                     now_ms=timestamp,
                 )
 
     def purge(self, memory_id: str, *, user_id: str | None = None) -> bool:
-        """Physically remove content after a user deletion request."""
+        """Physically remove content and every derived atomic memory."""
+        return self.purge_with_receipt(memory_id, user_id=user_id) is not None
+
+    def purge_with_receipt(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now_ms: int | None = None,
+    ) -> MemoryDeletionReceipt | None:
+        timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute("PRAGMA secure_delete = ON")
+            connection.execute("BEGIN IMMEDIATE")
             if user_id is None:
-                cursor = connection.execute(
-                    "DELETE FROM memory_items WHERE memory_id = ?",
+                root = connection.execute(
+                    "SELECT user_id FROM memory_items WHERE memory_id = ?",
                     (memory_id,),
-                )
+                ).fetchone()
             else:
-                cursor = connection.execute(
-                    "DELETE FROM memory_items WHERE memory_id = ? AND user_id = ?",
-                    (memory_id, user_id),
-                )
-            deleted = cursor.rowcount > 0
-            if deleted:
-                self._delete_derived_episode_summaries(
-                    connection,
-                    memory_id=memory_id,
-                )
-                profile_rows = connection.execute(
+                root = connection.execute(
                     """
+                    SELECT user_id FROM memory_items
+                    WHERE memory_id = ? AND user_id = ?
+                    """,
+                    (memory_id, user_id),
+                ).fetchone()
+            if root is None:
+                return None
+            owner = str(root[0])
+            target_ids = self._lineage_descendants(
+                connection,
+                user_id=owner,
+                root_memory_id=memory_id,
+            )
+            for target_id in reversed(target_ids):
+                self._purge_one(connection, memory_id=target_id)
+            placeholders = ",".join("?" for _ in target_ids)
+            remaining = connection.execute(
+                f"SELECT COUNT(*) FROM memory_items WHERE memory_id IN ({placeholders})",
+                target_ids,
+            ).fetchone()
+            assert remaining is not None
+            if int(remaining[0]) != 0:
+                raise RuntimeError("memory cascade deletion verification failed")
+            deletion_id = f"memory_deletion_{uuid4().hex}"
+            root_digest = hashlib.sha256(memory_id.encode("utf-8")).hexdigest()
+            verification_digest = hashlib.sha256(
+                json.dumps(
+                    sorted(target_ids),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            receipt = MemoryDeletionReceipt(
+                deletion_id=deletion_id,
+                user_id=owner,
+                root_memory_id_digest=root_digest,
+                deleted_memory_count=len(target_ids),
+                deleted_derived_count=len(target_ids) - 1,
+                completed_at_ms=timestamp,
+                verification_digest=verification_digest,
+            )
+            connection.execute(
+                """
+                INSERT INTO memory_deletion_receipts(
+                    deletion_id, user_id, root_memory_id_digest,
+                    deleted_memory_count, deleted_derived_count,
+                    completed_at_ms, verification_digest
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt.deletion_id,
+                    receipt.user_id,
+                    receipt.root_memory_id_digest,
+                    receipt.deleted_memory_count,
+                    receipt.deleted_derived_count,
+                    receipt.completed_at_ms,
+                    receipt.verification_digest,
+                ),
+            )
+            return receipt
+
+    @staticmethod
+    def _lineage_descendants(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        root_memory_id: str,
+    ) -> list[str]:
+        rows = connection.execute(
+            """
+            SELECT memory_id, derived_from_memory_ids_json
+            FROM memory_items WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchall()
+        parents_by_child = {str(row[0]): set(json.loads(str(row[1]))) for row in rows}
+        ordered = [root_memory_id]
+        seen = {root_memory_id}
+        while True:
+            added = False
+            for child_id, parent_ids in parents_by_child.items():
+                if child_id not in seen and parent_ids & seen:
+                    seen.add(child_id)
+                    ordered.append(child_id)
+                    added = True
+            if not added:
+                return ordered
+
+    @staticmethod
+    def _purge_one(connection: sqlite3.Connection, *, memory_id: str) -> None:
+        cursor = connection.execute(
+            "DELETE FROM memory_items WHERE memory_id = ?",
+            (memory_id,),
+        )
+        if cursor.rowcount == 0:
+            return
+        MemoryRepository._delete_derived_episode_summaries(
+            connection,
+            memory_id=memory_id,
+        )
+        profile_rows = connection.execute(
+            """
                     SELECT DISTINCT profile_id FROM memory_profile_evidence
                     WHERE memory_id = ?
                     """,
-                    (memory_id,),
-                ).fetchall()
-                for (profile_id,) in profile_rows:
-                    connection.execute(
-                        """
+            (memory_id,),
+        ).fetchall()
+        for (profile_id,) in profile_rows:
+            connection.execute(
+                """
                         DELETE FROM memory_profile_changes
                         WHERE previous_profile_id = ? OR proposed_profile_id = ?
                         """,
-                        (profile_id, profile_id),
-                    )
-                    conflict_rows = connection.execute(
-                        """
+                (profile_id, profile_id),
+            )
+            conflict_rows = connection.execute(
+                """
                         SELECT conflict_id FROM memory_conflict_options
                         WHERE profile_id = ?
                         """,
-                        (profile_id,),
-                    ).fetchall()
-                    for (conflict_id,) in conflict_rows:
-                        connection.execute(
-                            "DELETE FROM memory_conflict_options WHERE conflict_id = ?",
-                            (conflict_id,),
-                        )
-                        connection.execute(
-                            "DELETE FROM memory_conflict_groups WHERE conflict_id = ?",
-                            (conflict_id,),
-                        )
-                    connection.execute(
-                        "DELETE FROM memory_profile_evidence WHERE profile_id = ?",
-                        (profile_id,),
-                    )
-                    connection.execute(
-                        "DELETE FROM memory_retrievals WHERE memory_id = ?",
-                        (profile_id,),
-                    )
-                    connection.execute(
-                        "DELETE FROM memory_profiles WHERE profile_id = ?",
-                        (profile_id,),
-                    )
+                (profile_id,),
+            ).fetchall()
+            for (conflict_id,) in conflict_rows:
                 connection.execute(
-                    "DELETE FROM memory_observations WHERE memory_id = ?",
-                    (memory_id,),
+                    "DELETE FROM memory_conflict_options WHERE conflict_id = ?",
+                    (conflict_id,),
                 )
-                shadow_run_rows = connection.execute(
-                    """
+                connection.execute(
+                    "DELETE FROM memory_conflict_groups WHERE conflict_id = ?",
+                    (conflict_id,),
+                )
+            connection.execute(
+                "DELETE FROM memory_profile_evidence WHERE profile_id = ?",
+                (profile_id,),
+            )
+            connection.execute(
+                "DELETE FROM memory_retrievals WHERE memory_id = ?",
+                (profile_id,),
+            )
+            connection.execute(
+                "DELETE FROM memory_profiles WHERE profile_id = ?",
+                (profile_id,),
+            )
+        connection.execute(
+            "DELETE FROM memory_observations WHERE memory_id = ?",
+            (memory_id,),
+        )
+        shadow_run_rows = connection.execute(
+            """
                     SELECT DISTINCT shadow_run_id FROM memory_shadow_rankings
                     WHERE memory_id = ?
                     """,
-                    (memory_id,),
-                ).fetchall()
-                for (shadow_run_id,) in shadow_run_rows:
-                    connection.execute(
-                        "DELETE FROM memory_shadow_rankings WHERE shadow_run_id = ?",
-                        (shadow_run_id,),
-                    )
-                    connection.execute(
-                        "DELETE FROM memory_shadow_runs WHERE shadow_run_id = ?",
-                        (shadow_run_id,),
-                    )
-                connection.execute(
-                    "DELETE FROM memory_retrievals WHERE memory_id = ?",
-                    (memory_id,),
-                )
-            return deleted
+            (memory_id,),
+        ).fetchall()
+        for (shadow_run_id,) in shadow_run_rows:
+            connection.execute(
+                "DELETE FROM memory_shadow_rankings WHERE shadow_run_id = ?",
+                (shadow_run_id,),
+            )
+            connection.execute(
+                "DELETE FROM memory_shadow_runs WHERE shadow_run_id = ?",
+                (shadow_run_id,),
+            )
+        connection.execute(
+            "DELETE FROM memory_retrievals WHERE memory_id = ?",
+            (memory_id,),
+        )
 
     def list_active(
         self,
@@ -563,16 +667,10 @@ class MemoryRepository:
                 memory_id=memory_id,
                 now_ms=timestamp,
             )
-            next_state = (
-                MemoryState.ACTIVE
-                if item.state is MemoryState.EXPIRED
-                else item.state
-            )
+            next_state = MemoryState.ACTIVE if item.state is MemoryState.EXPIRED else item.state
             next_aspect = aspect or item.candidate.aspect
             next_subject_key = (
-                subject_key
-                if subject_key is not None
-                else item.candidate.subject_key
+                subject_key if subject_key is not None else item.candidate.subject_key
             )
             supersedes = item.supersedes_memory_id
             if next_state is MemoryState.ACTIVE and next_subject_key:
@@ -939,43 +1037,24 @@ class MemoryRepository:
             confidence=float(row["confidence"]),
             source_message_ids=json.loads(str(row["source_message_ids_json"])),
             source_window_id=(
-                str(row["source_window_id"])
-                if row["source_window_id"] is not None
-                else None
+                str(row["source_window_id"]) if row["source_window_id"] is not None else None
             ),
             purpose_scope=str(row["purpose_scope"]),
-            valid_from_ms=(
-                int(row["valid_from_ms"])
-                if row["valid_from_ms"] is not None
-                else None
-            ),
-            expires_at_ms=(
-                int(row["expires_at_ms"])
-                if row["expires_at_ms"] is not None
-                else None
-            ),
+            valid_from_ms=(int(row["valid_from_ms"]) if row["valid_from_ms"] is not None else None),
+            expires_at_ms=(int(row["expires_at_ms"]) if row["expires_at_ms"] is not None else None),
             user_confirmed=bool(row["user_confirmed"]),
             integrity_flags=json.loads(str(row["integrity_flags_json"])),
             user_edited=bool(row["user_edited"]),
             source_type=MemorySourceType(str(row["source_type"])),
             sensitivity=MemorySensitivity(str(row["sensitivity"])),
             allowed_uses=[
-                MemoryAllowedUse(value)
-                for value in json.loads(str(row["allowed_uses_json"]))
+                MemoryAllowedUse(value) for value in json.loads(str(row["allowed_uses_json"]))
             ],
             observed_at_ms=(
-                int(row["observed_at_ms"])
-                if row["observed_at_ms"] is not None
-                else None
+                int(row["observed_at_ms"]) if row["observed_at_ms"] is not None else None
             ),
-            valid_to_ms=(
-                int(row["valid_to_ms"])
-                if row["valid_to_ms"] is not None
-                else None
-            ),
-            derived_from_memory_ids=json.loads(
-                str(row["derived_from_memory_ids_json"])
-            ),
+            valid_to_ms=(int(row["valid_to_ms"]) if row["valid_to_ms"] is not None else None),
+            derived_from_memory_ids=json.loads(str(row["derived_from_memory_ids_json"])),
         )
         return MemoryItem(
             memory_id=str(row["memory_id"]),

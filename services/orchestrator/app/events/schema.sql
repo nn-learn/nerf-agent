@@ -125,6 +125,19 @@ CREATE TABLE IF NOT EXISTS memory_retrievals (
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_latest
     ON memory_retrievals(user_id, memory_id, used_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS memory_deletion_receipts (
+    deletion_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    root_memory_id_digest TEXT NOT NULL,
+    deleted_memory_count INTEGER NOT NULL,
+    deleted_derived_count INTEGER NOT NULL,
+    completed_at_ms INTEGER NOT NULL,
+    verification_digest TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_deletion_receipts_user_time
+    ON memory_deletion_receipts(user_id, completed_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS memory_observations (
     observation_id TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL,

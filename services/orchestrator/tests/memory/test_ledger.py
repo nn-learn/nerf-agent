@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -187,3 +188,124 @@ def test_valid_time_end_suppresses_recall_without_deleting_history(
     assert repository.list_active("user_1", as_of_ms=8_999) == [stored]
     assert repository.list_active("user_1", as_of_ms=9_000) == []
     assert repository.get(stored.memory_id, user_id="user_1").state.value == "ACTIVE"
+
+
+def test_purge_cascades_through_lineage_and_returns_content_free_receipt(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "memory.sqlite3"
+    repository = MemoryRepository(database_path)
+    repository.initialize()
+    root = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(
+            text="sensitive root content",
+            valid_to_ms=None,
+            derived_from_memory_ids=[],
+        ),
+    )
+    child = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(
+            text="derived summary",
+            valid_to_ms=None,
+            derived_from_memory_ids=[root.memory_id],
+        ),
+    )
+    grandchild = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(
+            text="derived profile",
+            valid_to_ms=None,
+            derived_from_memory_ids=[child.memory_id],
+        ),
+    )
+    unrelated = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(
+            text="unrelated preference",
+            valid_to_ms=None,
+            derived_from_memory_ids=[],
+        ),
+    )
+
+    receipt = repository.purge_with_receipt(
+        root.memory_id,
+        user_id="user_1",
+        now_ms=10_000,
+    )
+
+    assert receipt is not None
+    assert receipt.deleted_memory_count == 3
+    assert receipt.deleted_derived_count == 2
+    assert receipt.root_memory_id_digest == hashlib.sha256(
+        root.memory_id.encode("utf-8")
+    ).hexdigest()
+    for deleted in (root, child, grandchild):
+        with pytest.raises(KeyError):
+            repository.get(deleted.memory_id, user_id="user_1")
+    assert repository.get(unrelated.memory_id, user_id="user_1") == unrelated
+    with sqlite3.connect(database_path) as connection:
+        stored_receipt = connection.execute(
+            """
+            SELECT root_memory_id_digest, deleted_memory_count,
+                   deleted_derived_count, verification_digest
+            FROM memory_deletion_receipts WHERE deletion_id = ?
+            """,
+            (receipt.deletion_id,),
+        ).fetchone()
+    assert stored_receipt == (
+        receipt.root_memory_id_digest,
+        3,
+        2,
+        receipt.verification_digest,
+    )
+    assert "sensitive root content" not in str(stored_receipt)
+
+
+def test_cascade_deletion_is_tenant_scoped(tmp_path: Path) -> None:
+    repository = MemoryRepository(tmp_path / "memory.sqlite3")
+    repository.initialize()
+    owner_root = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(valid_to_ms=None, derived_from_memory_ids=[]),
+    )
+    other = repository.add_active(
+        user_id="user_2",
+        candidate=_candidate(
+            text="other user memory",
+            valid_to_ms=None,
+            derived_from_memory_ids=[],
+        ),
+    )
+
+    assert repository.purge(owner_root.memory_id, user_id="user_2") is False
+    assert repository.get(owner_root.memory_id, user_id="user_1") == owner_root
+    assert repository.purge(owner_root.memory_id, user_id="user_1") is True
+    assert repository.get(other.memory_id, user_id="user_2") == other
+
+
+def test_revoke_cascades_but_preserves_auditable_lineage(tmp_path: Path) -> None:
+    repository = MemoryRepository(tmp_path / "memory.sqlite3")
+    repository.initialize()
+    root = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(valid_to_ms=None, derived_from_memory_ids=[]),
+    )
+    child = repository.add_active(
+        user_id="user_1",
+        candidate=_candidate(
+            text="derived summary",
+            valid_to_ms=None,
+            derived_from_memory_ids=[root.memory_id],
+        ),
+    )
+
+    repository.revoke(root.memory_id, user_id="user_1", now_ms=10_000)
+
+    revoked_root = repository.get(root.memory_id, user_id="user_1")
+    revoked_child = repository.get(child.memory_id, user_id="user_1")
+    assert revoked_root.state.value == "REVOKED"
+    assert revoked_child.state.value == "REVOKED"
+    assert revoked_child.candidate.derived_from_memory_ids == [root.memory_id]
+    assert repository.list_active("user_1", as_of_ms=10_000) == []
