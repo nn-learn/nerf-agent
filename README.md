@@ -129,7 +129,7 @@ Agent V4.0–V4.4 已在 V3 控制面之上增加会话级 Care Loop：只有用
 
 ## Agent V5 可信记忆治理
 
-V5.0–V5.3 已将原子记忆升级为可审计 Memory Ledger：持久化来源、敏感等级、用途、双时间和派生 lineage；撤回和物理删除沿派生链传播，并生成不含原文的验证凭证。BGE/词法只负责候选召回，独立 Memory Use Policy 阻止未经用户主动重提的健康记忆、未被当前轮证实的历史危机记忆以及不可信视觉/外部来源进入个性化上下文。用户现在可以查看 provenance、暂停/恢复、修改用途、结构化导出和执行带凭证的遗忘。路线与边界见 [`docs/AGENT_V5.md`](docs/AGENT_V5.md)。
+V5.0–V5.4 已将原子记忆升级为可审计 Memory Ledger：持久化来源、敏感等级、用途、双时间和派生 lineage；撤回和物理删除沿派生链传播，并生成不含原文的验证凭证。BGE/词法只负责候选召回，独立 Memory Use Policy 阻止未经用户主动重提的健康记忆、未被当前轮证实的历史危机记忆以及不可信视觉/外部来源进入个性化上下文。用户可以查看 provenance、暂停/恢复、修改用途、结构化导出和执行带凭证的遗忘。当前 20 条可信记忆工程场景全部通过，发布门仍保持 `production_ready=false`。路线见 [`docs/AGENT_V5.md`](docs/AGENT_V5.md)，指标见 [`docs/AGENT_V5_EVALUATION.md`](docs/AGENT_V5_EVALUATION.md)。
 
 ## 最快 mock 演示（无 GPU）
 

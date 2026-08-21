@@ -73,6 +73,10 @@ Invoke-Verification "Agent V4 release gate" $orchestratorRoot {
     & $python -m app.evals.run_agent_v4 `
         --scenarios (Join-Path $projectRoot "evals\agent_v4_scenarios.jsonl")
 }
+Invoke-Verification "Memory V5 release gate" $orchestratorRoot {
+    & $python -m app.memory.run_v5_evaluation `
+        --cases (Join-Path $projectRoot "evals\memory_v5_cases.jsonl")
+}
 
 Write-Host "`nOptional browser E2E and CUDA smoke are not run by the zero-GPU baseline."
 Write-Host "Verification complete."
