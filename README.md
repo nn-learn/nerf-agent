@@ -127,6 +127,10 @@ Agent V4.0–V4.4 已在 V3 控制面之上增加会话级 Care Loop：只有用
 
 纵向观测只统计固定枚举、计数、比率和用户明确自报的“有帮助/没帮助/跳过”，不从表情、声音或摄像头推断疗效。当前 30 条、78 turn 多轮工程轨迹全部通过，目标越权推断、遥测内容泄漏和媒体结果推断率均为 `0.000`；发布门仍为 `production_ready=false`。设计见 [`docs/AGENT_V4.md`](docs/AGENT_V4.md)，评测见 [`docs/AGENT_V4_EVALUATION.md`](docs/AGENT_V4_EVALUATION.md)。
 
+## Agent V5 可信记忆治理
+
+V5.0 已将原子记忆升级为可审计 Memory Ledger：持久化来源类型、敏感等级、允许用途、观测时间、现实有效区间和派生 lineage。旧库可在线迁移；跨用户或悬空 lineage 会 fail-closed；现实有效期结束只停止当前召回，不会混同于数据保留到期；用户编辑拥有独立 provenance。路线与边界见 [`docs/AGENT_V5.md`](docs/AGENT_V5.md)。
+
 ## 最快 mock 演示（无 GPU）
 
 首次准备：

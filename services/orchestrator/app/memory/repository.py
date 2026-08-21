@@ -7,11 +7,14 @@ from typing import cast
 from uuid import uuid4
 
 from app.memory.models import (
+    MemoryAllowedUse,
     MemoryAspect,
     MemoryCandidate,
     MemoryItem,
     MemoryKind,
     MemoryRecall,
+    MemorySensitivity,
+    MemorySourceType,
     MemoryState,
 )
 
@@ -21,7 +24,8 @@ _SELECT_COLUMNS = """
     confidence, source_message_ids_json, source_window_id,
     purpose_scope, valid_from_ms, expires_at_ms, user_confirmed,
     integrity_flags_json, user_edited, created_at_ms, updated_at_ms,
-    supersedes_memory_id
+    supersedes_memory_id, source_type, sensitivity, allowed_uses_json,
+    observed_at_ms, valid_to_ms, derived_from_memory_ids_json
 """
 
 _MIGRATION_COLUMNS = {
@@ -39,6 +43,14 @@ _MIGRATION_COLUMNS = {
     "created_at_ms": "INTEGER NOT NULL DEFAULT 0",
     "updated_at_ms": "INTEGER NOT NULL DEFAULT 0",
     "supersedes_memory_id": "TEXT",
+    "source_type": "TEXT NOT NULL DEFAULT 'LEGACY'",
+    "sensitivity": "TEXT NOT NULL DEFAULT 'GENERAL'",
+    "allowed_uses_json": (
+        "TEXT NOT NULL DEFAULT '[\"PERSONALIZATION\",\"RESPONSE_CONTEXT\"]'"
+    ),
+    "observed_at_ms": "INTEGER",
+    "valid_to_ms": "INTEGER",
+    "derived_from_memory_ids_json": "TEXT NOT NULL DEFAULT '[]'",
 }
 
 _SHADOW_MIGRATION_COLUMNS = {
@@ -130,6 +142,12 @@ class MemoryRepository:
             )
             connection.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_memory_ledger_governance
+                ON memory_items(user_id, state, sensitivity, source_type)
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_memory_shadow_runs_expiry
                 ON memory_shadow_runs(expires_at_ms)
                 """
@@ -176,6 +194,7 @@ class MemoryRepository:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
             for candidate, state in candidates:
+                self._validate_lineage(connection, user_id, candidate)
                 duplicate = self._find_duplicate(connection, user_id, candidate)
                 if duplicate is not None:
                     stored.append(self._row_to_item(duplicate))
@@ -199,9 +218,15 @@ class MemoryRepository:
                         confidence, source_message_ids_json, source_window_id,
                         purpose_scope, valid_from_ms, expires_at_ms,
                         user_confirmed, integrity_flags_json, user_edited,
-                        created_at_ms, updated_at_ms, supersedes_memory_id
+                        created_at_ms, updated_at_ms, supersedes_memory_id,
+                        source_type, sensitivity, allowed_uses_json,
+                        observed_at_ms, valid_to_ms,
+                        derived_from_memory_ids_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     (
                         memory_id,
@@ -226,6 +251,22 @@ class MemoryRepository:
                         timestamp,
                         timestamp,
                         supersedes,
+                        candidate.source_type.value,
+                        candidate.sensitivity.value,
+                        json.dumps(
+                            [allowed_use.value for allowed_use in candidate.allowed_uses],
+                            ensure_ascii=False,
+                        ),
+                        (
+                            candidate.observed_at_ms
+                            if candidate.observed_at_ms is not None
+                            else timestamp
+                        ),
+                        candidate.valid_to_ms,
+                        json.dumps(
+                            candidate.derived_from_memory_ids,
+                            ensure_ascii=False,
+                        ),
                     ),
                 )
                 row = connection.execute(
@@ -438,6 +479,7 @@ class MemoryRepository:
                 WHERE user_id = ? AND state = ? AND purpose_scope = ?
                   AND user_confirmed = 1
                   AND (valid_from_ms IS NULL OR valid_from_ms <= ?)
+                  AND (valid_to_ms IS NULL OR valid_to_ms > ?)
                   AND (expires_at_ms IS NULL OR expires_at_ms > ?)
                 ORDER BY updated_at_ms DESC, rowid DESC
                 """,
@@ -445,6 +487,7 @@ class MemoryRepository:
                     user_id,
                     MemoryState.ACTIVE.value,
                     purpose_scope,
+                    timestamp,
                     timestamp,
                     timestamp,
                 ),
@@ -566,7 +609,8 @@ class MemoryRepository:
                 SET content = ?, contains_sensitive_content = ?,
                     aspect = ?, subject_key = ?, expires_at_ms = ?,
                     state = ?, confidence = 1.0, user_edited = 1,
-                    updated_at_ms = ?, supersedes_memory_id = ?
+                    updated_at_ms = ?, supersedes_memory_id = ?,
+                    source_type = ?, sensitivity = ?, observed_at_ms = ?
                 WHERE memory_id = ? AND user_id = ?
                 """,
                 (
@@ -578,6 +622,13 @@ class MemoryRepository:
                     next_state.value,
                     timestamp,
                     supersedes,
+                    MemorySourceType.USER_EDIT.value,
+                    (
+                        MemorySensitivity.HEALTH_SENSITIVE.value
+                        if contains_sensitive_content
+                        else MemorySensitivity.GENERAL.value
+                    ),
+                    timestamp,
                     memory_id,
                     user_id,
                 ),
@@ -795,6 +846,27 @@ class MemoryRepository:
             )
 
     @staticmethod
+    def _validate_lineage(
+        connection: sqlite3.Connection,
+        user_id: str,
+        candidate: MemoryCandidate,
+    ) -> None:
+        if not candidate.derived_from_memory_ids:
+            return
+        placeholders = ",".join("?" for _ in candidate.derived_from_memory_ids)
+        rows = connection.execute(
+            f"""
+            SELECT memory_id FROM memory_items
+            WHERE user_id = ? AND memory_id IN ({placeholders})
+            """,
+            (user_id, *candidate.derived_from_memory_ids),
+        ).fetchall()
+        known = {str(row[0]) for row in rows}
+        missing = set(candidate.derived_from_memory_ids) - known
+        if missing:
+            raise ValueError("derived memories must exist for the same user")
+
+    @staticmethod
     def _find_duplicate(
         connection: sqlite3.Connection,
         user_id: str,
@@ -885,6 +957,25 @@ class MemoryRepository:
             user_confirmed=bool(row["user_confirmed"]),
             integrity_flags=json.loads(str(row["integrity_flags_json"])),
             user_edited=bool(row["user_edited"]),
+            source_type=MemorySourceType(str(row["source_type"])),
+            sensitivity=MemorySensitivity(str(row["sensitivity"])),
+            allowed_uses=[
+                MemoryAllowedUse(value)
+                for value in json.loads(str(row["allowed_uses_json"]))
+            ],
+            observed_at_ms=(
+                int(row["observed_at_ms"])
+                if row["observed_at_ms"] is not None
+                else None
+            ),
+            valid_to_ms=(
+                int(row["valid_to_ms"])
+                if row["valid_to_ms"] is not None
+                else None
+            ),
+            derived_from_memory_ids=json.loads(
+                str(row["derived_from_memory_ids_json"])
+            ),
         )
         return MemoryItem(
             memory_id=str(row["memory_id"]),

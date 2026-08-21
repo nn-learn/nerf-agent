@@ -100,7 +100,13 @@ CREATE TABLE IF NOT EXISTS memory_items (
     user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
     created_at_ms INTEGER NOT NULL DEFAULT 0,
     updated_at_ms INTEGER NOT NULL DEFAULT 0,
-    supersedes_memory_id TEXT
+    supersedes_memory_id TEXT,
+    source_type TEXT NOT NULL DEFAULT 'LEGACY',
+    sensitivity TEXT NOT NULL DEFAULT 'GENERAL',
+    allowed_uses_json TEXT NOT NULL DEFAULT '["PERSONALIZATION","RESPONSE_CONTEXT"]',
+    observed_at_ms INTEGER,
+    valid_to_ms INTEGER,
+    derived_from_memory_ids_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS memory_retrievals (

@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class MemoryKind(StrEnum):
@@ -18,6 +18,31 @@ class MemoryAspect(StrEnum):
     GOAL = "GOAL"
     COPING_STRATEGY = "COPING_STRATEGY"
     BOUNDARY = "BOUNDARY"
+
+
+class MemorySourceType(StrEnum):
+    """Auditable origin of a claim, independent of its transport name."""
+
+    USER_STATEMENT = "USER_STATEMENT"
+    USER_EDIT = "USER_EDIT"
+    MODEL_EXTRACTION = "MODEL_EXTRACTION"
+    EXTERNAL_TOOL = "EXTERNAL_TOOL"
+    VISUAL_OBSERVATION = "VISUAL_OBSERVATION"
+    LEGACY = "LEGACY"
+
+
+class MemorySensitivity(StrEnum):
+    GENERAL = "GENERAL"
+    PERSONAL = "PERSONAL"
+    HEALTH_SENSITIVE = "HEALTH_SENSITIVE"
+    CRISIS_SENSITIVE = "CRISIS_SENSITIVE"
+
+
+class MemoryAllowedUse(StrEnum):
+    PERSONALIZATION = "PERSONALIZATION"
+    RESPONSE_CONTEXT = "RESPONSE_CONTEXT"
+    SAFETY_SUPPORT = "SAFETY_SUPPORT"
+    AGGREGATE_ANALYTICS = "AGGREGATE_ANALYTICS"
 
 
 class MessageRole(StrEnum):
@@ -105,6 +130,37 @@ class MemoryCandidate(BaseModel):
     user_confirmed: bool = False
     integrity_flags: list[str] = Field(default_factory=list)
     user_edited: bool = False
+    source_type: MemorySourceType = MemorySourceType.MODEL_EXTRACTION
+    sensitivity: MemorySensitivity = MemorySensitivity.GENERAL
+    allowed_uses: list[MemoryAllowedUse] = Field(
+        default_factory=lambda: [
+            MemoryAllowedUse.PERSONALIZATION,
+            MemoryAllowedUse.RESPONSE_CONTEXT,
+        ]
+    )
+    observed_at_ms: int | None = Field(default=None, ge=0)
+    valid_to_ms: int | None = Field(default=None, ge=0)
+    derived_from_memory_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_ledger_contract(self) -> "MemoryCandidate":
+        if (
+            self.valid_from_ms is not None
+            and self.valid_to_ms is not None
+            and self.valid_to_ms <= self.valid_from_ms
+        ):
+            raise ValueError("memory valid_to_ms must be after valid_from_ms")
+        if len(set(self.allowed_uses)) != len(self.allowed_uses):
+            raise ValueError("memory allowed_uses must be unique")
+        if not self.allowed_uses:
+            raise ValueError("memory must allow at least one governed use")
+        if any(not memory_id.strip() for memory_id in self.derived_from_memory_ids):
+            raise ValueError("derived memory ids must not be blank")
+        if len(set(self.derived_from_memory_ids)) != len(
+            self.derived_from_memory_ids
+        ):
+            raise ValueError("derived memory ids must be unique")
+        return self
 
 
 class MemoryItem(BaseModel):
