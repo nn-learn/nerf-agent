@@ -17,15 +17,19 @@ from app.memory.extraction import (
 )
 from app.memory.identity import MemorySubjectStore
 from app.memory.models import (
+    MemoryAllowedUse,
     MemoryAspect,
     MemoryChange,
     MemoryChangeState,
     MemoryConflict,
     MemoryConflictState,
+    MemoryDeletionReceipt,
     MemoryEvidenceRelation,
     MemoryItem,
     MemoryProfile,
     MemoryProfileState,
+    MemorySensitivity,
+    MemorySourceType,
     MemoryState,
 )
 from app.memory.repository import MemoryRepository
@@ -58,6 +62,13 @@ class MemoryView(BaseModel):
     source_turn_id: str
     expires_at_ms: int | None = None
     user_edited: bool = False
+    source_type: MemorySourceType
+    sensitivity: MemorySensitivity
+    allowed_uses: list[MemoryAllowedUse]
+    observed_at_ms: int | None = None
+    valid_from_ms: int | None = None
+    valid_to_ms: int | None = None
+    derived_from_memory_ids: list[str]
 
 
 class MemoryRecallView(BaseModel):
@@ -71,6 +82,29 @@ class MemoryRecallView(BaseModel):
 class MemoryUpdateRequest(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     retention: Literal["7_days", "30_days", "90_days", "forever"] = "forever"
+
+
+class MemoryControlRequest(BaseModel):
+    action: Literal["pause", "resume"]
+
+
+class MemoryUsesUpdateRequest(BaseModel):
+    allowed_uses: list[MemoryAllowedUse] = Field(min_length=1)
+
+
+class MemoryExportView(BaseModel):
+    schema_version: str = "memory-user-export-1.0"
+    exported_at_ms: int
+    memories: list[MemoryView]
+
+
+class MemoryDeletionReceiptView(BaseModel):
+    deletion_id: str
+    root_memory_id_digest: str
+    deleted_memory_count: int
+    deleted_derived_count: int
+    completed_at_ms: int
+    verification_digest: str
 
 
 class MemoryDecisionRequest(BaseModel):
@@ -209,6 +243,20 @@ def create_memory_router(
     ) -> list[MemoryView]:
         user_id = await current_user(session_id, authorization)
         return [_view(item) for item in repository.list_visible(user_id)]
+
+    @router.get(
+        "/{session_id}/memories/export",
+        response_model=MemoryExportView,
+    )
+    async def export_memories(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> MemoryExportView:
+        user_id = await current_user(session_id, authorization)
+        return MemoryExportView(
+            exported_at_ms=int(time.time() * 1000),
+            memories=[_view(item) for item in repository.list_visible(user_id)],
+        )
 
     @router.get(
         "/{session_id}/memory-profiles",
@@ -667,6 +715,109 @@ def create_memory_router(
         )
         return _view(item)
 
+    @router.post(
+        "/{session_id}/memories/{memory_id}/control",
+        response_model=MemoryView,
+    )
+    async def control_memory(
+        session_id: str,
+        memory_id: MemoryId,
+        request: MemoryControlRequest,
+        authorization: str | None = Header(default=None),
+    ) -> MemoryView:
+        user_id = await current_user(session_id, authorization)
+        try:
+            items = repository.set_paused(
+                memory_id,
+                user_id=user_id,
+                paused=request.action == "pause",
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="memory not found") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        item = next(item for item in items if item.memory_id == memory_id)
+        await asyncio.to_thread(consolidator.rebuild_user, user_id)
+        if request.action == "resume":
+            for resumed_item in items:
+                if resumed_item.state is MemoryState.ACTIVE:
+                    await asyncio.to_thread(
+                        episodes.rebuild_for_memory,
+                        user_id=user_id,
+                        memory_id=resumed_item.memory_id,
+                        memory_repository=repository,
+                    )
+        await store.append_payload(
+            session_id=session_id,
+            event_type=f"memory.{request.action}d",
+            payload={"memory_id": memory_id},
+        )
+        return _view(item)
+
+    @router.put(
+        "/{session_id}/memories/{memory_id}/uses",
+        response_model=MemoryView,
+    )
+    async def update_memory_uses(
+        session_id: str,
+        memory_id: MemoryId,
+        request: MemoryUsesUpdateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> MemoryView:
+        user_id = await current_user(session_id, authorization)
+        try:
+            item = repository.update_allowed_uses(
+                memory_id,
+                user_id=user_id,
+                allowed_uses=request.allowed_uses,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="memory not found") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await asyncio.to_thread(consolidator.rebuild_user, user_id)
+        if MemoryAllowedUse.PERSONALIZATION in request.allowed_uses:
+            await asyncio.to_thread(
+                episodes.rebuild_for_memory,
+                user_id=user_id,
+                memory_id=item.memory_id,
+                memory_repository=repository,
+            )
+        await store.append_payload(
+            session_id=session_id,
+            event_type="memory.uses_updated",
+            payload={
+                "memory_id": memory_id,
+                "allowed_uses": [allowed.value for allowed in request.allowed_uses],
+            },
+        )
+        return _view(item)
+
+    @router.post(
+        "/{session_id}/memories/{memory_id}/forget",
+        response_model=MemoryDeletionReceiptView,
+    )
+    async def forget_memory(
+        session_id: str,
+        memory_id: MemoryId,
+        authorization: str | None = Header(default=None),
+    ) -> MemoryDeletionReceiptView:
+        user_id = await current_user(session_id, authorization)
+        receipt = repository.purge_with_receipt(memory_id, user_id=user_id)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        await asyncio.to_thread(consolidator.rebuild_user, user_id)
+        await store.append_payload(
+            session_id=session_id,
+            event_type="memory.forgotten",
+            payload={
+                "deletion_id": receipt.deletion_id,
+                "deleted_memory_count": receipt.deleted_memory_count,
+                "deleted_derived_count": receipt.deleted_derived_count,
+            },
+        )
+        return _deletion_receipt_view(receipt)
+
     @router.get(
         "/{session_id}/memories/{memory_id}/latest-recall",
         response_model=MemoryRecallView | None,
@@ -728,6 +879,26 @@ def _view(item: MemoryItem) -> MemoryView:
         source_turn_id=item.candidate.source_turn_id,
         expires_at_ms=item.candidate.expires_at_ms,
         user_edited=item.candidate.user_edited,
+        source_type=item.candidate.source_type,
+        sensitivity=item.candidate.sensitivity,
+        allowed_uses=item.candidate.allowed_uses,
+        observed_at_ms=item.candidate.observed_at_ms,
+        valid_from_ms=item.candidate.valid_from_ms,
+        valid_to_ms=item.candidate.valid_to_ms,
+        derived_from_memory_ids=item.candidate.derived_from_memory_ids,
+    )
+
+
+def _deletion_receipt_view(
+    receipt: MemoryDeletionReceipt,
+) -> MemoryDeletionReceiptView:
+    return MemoryDeletionReceiptView(
+        deletion_id=receipt.deletion_id,
+        root_memory_id_digest=receipt.root_memory_id_digest,
+        deleted_memory_count=receipt.deleted_memory_count,
+        deleted_derived_count=receipt.deleted_derived_count,
+        completed_at_ms=receipt.completed_at_ms,
+        verification_digest=receipt.verification_digest,
     )
 
 

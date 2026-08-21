@@ -12,6 +12,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from app.memory.models import (
+    MemoryAllowedUse,
     MemoryAspect,
     MemoryChange,
     MemoryChangeState,
@@ -173,6 +174,7 @@ class MemoryProfileRepository:
             or not item.candidate.user_confirmed
             or item.candidate.integrity_flags
             or not item.candidate.subject_key
+            or MemoryAllowedUse.PERSONALIZATION not in item.candidate.allowed_uses
         ):
             return None
         timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
@@ -255,6 +257,8 @@ class MemoryProfileRepository:
             if item.state not in {MemoryState.ACTIVE, MemoryState.SUPERSEDED}:
                 continue
             if not item.candidate.user_confirmed or item.candidate.integrity_flags:
+                continue
+            if MemoryAllowedUse.PERSONALIZATION not in item.candidate.allowed_uses:
                 continue
             evidence.append(
                 (

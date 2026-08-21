@@ -65,6 +65,7 @@ class MemoryState(StrEnum):
     REJECTED = "REJECTED"
     SUPERSEDED = "SUPERSEDED"
     QUARANTINED = "QUARANTINED"
+    PAUSED = "PAUSED"
 
 
 class MemoryProfileState(StrEnum):

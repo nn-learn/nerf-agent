@@ -361,6 +361,137 @@ class MemoryRepository:
                     now_ms=timestamp,
                 )
 
+    def set_paused(
+        self,
+        memory_id: str,
+        *,
+        user_id: str,
+        paused: bool,
+        now_ms: int | None = None,
+    ) -> list[MemoryItem]:
+        timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            root = connection.execute(
+                f"""
+                SELECT {_SELECT_COLUMNS} FROM memory_items
+                WHERE memory_id = ? AND user_id = ?
+                """,
+                (memory_id, user_id),
+            ).fetchone()
+            if root is None:
+                raise KeyError(memory_id)
+            root_item = self._row_to_item(root)
+            expected = MemoryState.ACTIVE if paused else MemoryState.PAUSED
+            if root_item.state is not expected:
+                raise ValueError(
+                    "only active memory can be paused"
+                    if paused
+                    else "only paused memory can be resumed"
+                )
+            if not paused and root_item.candidate.subject_key:
+                conflict = connection.execute(
+                    """
+                    SELECT 1 FROM memory_items
+                    WHERE user_id = ? AND subject_key = ? AND state = ?
+                      AND memory_id <> ?
+                    """,
+                    (
+                        user_id,
+                        root_item.candidate.subject_key,
+                        MemoryState.ACTIVE.value,
+                        memory_id,
+                    ),
+                ).fetchone()
+                if conflict is not None:
+                    raise ValueError("a newer active memory must be resolved first")
+            target_ids = self._lineage_descendants(
+                connection,
+                user_id=user_id,
+                root_memory_id=memory_id,
+            )
+            placeholders = ",".join("?" for _ in target_ids)
+            next_state = MemoryState.PAUSED if paused else MemoryState.ACTIVE
+            connection.execute(
+                f"""
+                UPDATE memory_items SET state = ?, updated_at_ms = ?
+                WHERE user_id = ? AND memory_id IN ({placeholders})
+                  AND state = ?
+                """,
+                (
+                    next_state.value,
+                    timestamp,
+                    user_id,
+                    *target_ids,
+                    expected.value,
+                ),
+            )
+            if paused:
+                for target_id in target_ids:
+                    self._invalidate_derived_profiles(
+                        connection,
+                        memory_id=target_id,
+                        now_ms=timestamp,
+                    )
+                    self._delete_derived_episode_summaries(
+                        connection,
+                        memory_id=target_id,
+                    )
+            rows = connection.execute(
+                f"""
+                SELECT {_SELECT_COLUMNS} FROM memory_items
+                WHERE user_id = ? AND memory_id IN ({placeholders})
+                ORDER BY memory_id
+                """,
+                (user_id, *target_ids),
+            ).fetchall()
+            return [self._row_to_item(row) for row in rows]
+
+    def update_allowed_uses(
+        self,
+        memory_id: str,
+        *,
+        user_id: str,
+        allowed_uses: list[MemoryAllowedUse],
+        now_ms: int | None = None,
+    ) -> MemoryItem:
+        if not allowed_uses or len(set(allowed_uses)) != len(allowed_uses):
+            raise ValueError("allowed uses must be non-empty and unique")
+        timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            cursor = connection.execute(
+                """
+                UPDATE memory_items SET allowed_uses_json = ?, updated_at_ms = ?
+                WHERE memory_id = ? AND user_id = ?
+                """,
+                (
+                    json.dumps([allowed.value for allowed in allowed_uses]),
+                    timestamp,
+                    memory_id,
+                    user_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(memory_id)
+            if MemoryAllowedUse.PERSONALIZATION not in allowed_uses:
+                self._invalidate_derived_profiles(
+                    connection,
+                    memory_id=memory_id,
+                    now_ms=timestamp,
+                )
+                self._delete_derived_episode_summaries(
+                    connection,
+                    memory_id=memory_id,
+                )
+            row = connection.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM memory_items WHERE memory_id = ?",
+                (memory_id,),
+            ).fetchone()
+            assert row is not None
+            return self._row_to_item(row)
+
     def purge(self, memory_id: str, *, user_id: str | None = None) -> bool:
         """Physically remove content and every derived atomic memory."""
         return self.purge_with_receipt(memory_id, user_id=user_id) is not None
@@ -897,7 +1028,7 @@ class MemoryRepository:
             rows = connection.execute(
                 f"""
                 SELECT {_SELECT_COLUMNS} FROM memory_items
-                WHERE user_id = ? AND state IN (?, ?, ?)
+                WHERE user_id = ? AND state IN (?, ?, ?, ?)
                 ORDER BY updated_at_ms DESC, rowid DESC
                 """,
                 (
@@ -905,6 +1036,7 @@ class MemoryRepository:
                     MemoryState.AWAITING_CONSENT.value,
                     MemoryState.ACTIVE.value,
                     MemoryState.EXPIRED.value,
+                    MemoryState.PAUSED.value,
                 ),
             ).fetchall()
         return [self._row_to_item(row) for row in rows]
